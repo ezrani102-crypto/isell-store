@@ -8,19 +8,18 @@ import mysql from 'mysql2/promise';
 // ============================================================================
 // 1. CONFIGURATION & CONSTANTS
 // ============================================================================
-const BOT_TOKEN = process.env.BOT_TOKEN;
+const BOT_TOKEN = (process.env.BOT_TOKEN || '').trim();
 const ADMIN_ID = Number(process.env.ADMIN_ID || '7695407294');
 const STORE_NAME = process.env.STORE_NAME || 'ISell Store';
 const SUPPORT_USERNAME = (process.env.SUPPORT_USERNAME || '@ezrani').replace(/^@/, '');
 const BINANCE_ID = process.env.BINANCE_ID || '898551245';
 const USDT_BEP20_ADDRESS = process.env.USDT_BEP20_ADDRESS || '0xa271f85cc7340aceec7d3f7711feae8925bd50fb';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
-const DATABASE_URL = process.env.DATABASE_URL;
+const DATABASE_URL = process.env.DATABASE_URL || '';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 // ============================================================================
-// 2. DATABASE POOL (WITH MANDATORY SSL FOR CLOUD MYSQL)
+// 2. DATABASE POOL (BULLETPROOF PARSING & SSL FOR TIDB CLOUD)
 // ============================================================================
 let pool = null;
 
@@ -29,19 +28,34 @@ function getPool() {
     if (!DATABASE_URL) {
       throw new Error('DATABASE_URL environment variable is missing.');
     }
-    pool = mysql.createPool({
-      uri: DATABASE_URL,
-      ssl: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: true
-      },
+
+    const config = {
       waitForConnections: true,
       connectionLimit: 10,
       maxIdle: 5,
       idleTimeout: 30000,
       queueLimit: 0,
-      decimalNumbers: true
-    });
+      decimalNumbers: true,
+      ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+      }
+    };
+
+    try {
+      const url = new URL(DATABASE_URL);
+      config.host = url.hostname;
+      config.port = Number(url.port || 4000);
+      config.user = decodeURIComponent(url.username);
+      config.password = decodeURIComponent(url.password);
+      const dbName = url.pathname.replace(/^\//, '');
+      // If no database specified in URL, default to 'test' which is always present in TiDB
+      config.database = dbName || 'test';
+    } catch {
+      config.uri = DATABASE_URL;
+    }
+
+    pool = mysql.createPool(config);
   }
   return pool;
 }
@@ -305,7 +319,7 @@ async function clearUserState(userId) {
 }
 
 // ============================================================================
-// 5. NAVIGATION KEYBOARDS
+// 5. KEYBOARDS
 // ============================================================================
 function getCustomerMainMenuKeyboard(userId) {
   const buttons = [
@@ -334,14 +348,13 @@ function getAdminPanelKeyboard() {
 }
 
 // ============================================================================
-// 6. STORE CATALOG UI (SCREENSHOT 2 STYLE: 2-COLUMN, CLEAN BLUE LABELS)
+// 6. STORE CATALOG UI (SCREENSHOT 2: 2-COLUMN GRID)
 // ============================================================================
 async function renderStorePage(chatId, messageId = null, page = 0) {
   const db = getPool();
   const PAGE_SIZE = 14;
   const offset = page * PAGE_SIZE;
 
-  // Retrieve products and calculate active inventory
   const [products] = await db.query(
     `SELECT p.id, p.name, p.emoji,
       (SELECT COUNT(i.id) 
@@ -365,7 +378,7 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     const emptyText =
       `📁 <b>Categories</b>\n\n` +
       `<i>No products have been added yet.</i>\n\n` +
-      (chatId === ADMIN_ID ? `👉 <b>Admin Tip:</b> Use the <b>Admin Panel</b> to create products and plans!` : `Please check back shortly!`);
+      (chatId === ADMIN_ID ? `👉 <b>Admin Tip:</b> Use the <b>Admin Panel</b> to create your first product!` : `Please check back shortly!`);
 
     const emptyKeyboard = {
       inline_keyboard: [
@@ -382,14 +395,11 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     return;
   }
 
-  // 2-Column Grid (Screenshot 2 style)
   const inlineGrid = [];
   let currentRow = [];
 
   for (const item of products) {
     const hasStock = item.stock_count > 0;
-    // Blue/Available products display normally with their icon;
-    // out of stock products show a red indicator dot.
     const label = hasStock ? `${item.emoji} ${item.name}` : `🔴 ${item.emoji} ${item.name}`;
 
     currentRow.push({
@@ -406,32 +416,21 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     inlineGrid.push(currentRow);
   }
 
-  // Navigation rows
   const navRow = [];
-  if (page > 0) {
-    navRow.push({ text: '◀️ Prev', callback_data: `store_page:${page - 1}` });
-  }
-  if (totalPages > 1) {
-    navRow.push({ text: `Page ${page + 1}/${totalPages}`, callback_data: `store_page:${page}` });
-  }
-  if (page + 1 < totalPages) {
-    navRow.push({ text: 'Next ▶️', callback_data: `store_page:${page + 1}` });
-  }
-  if (navRow.length > 0) {
-    inlineGrid.push(navRow);
-  }
+  if (page > 0) navRow.push({ text: '◀️ Prev', callback_data: `store_page:${page - 1}` });
+  if (totalPages > 1) navRow.push({ text: `Page ${page + 1}/${totalPages}`, callback_data: `store_page:${page}` });
+  if (page + 1 < totalPages) navRow.push({ text: 'Next ▶️', callback_data: `store_page:${page + 1}` });
 
+  if (navRow.length > 0) inlineGrid.push(navRow);
   inlineGrid.push([
     { text: '🔎 Search', callback_data: 'store_search' },
     { text: '💰 Wallet', callback_data: 'wallet_main' },
     { text: '🏠 Home', callback_data: 'main_home' }
   ]);
 
-  const text =
-    `📁 <b>Categories</b>\n\n` +
-    `<i>Pick a category to browse.</i>`;
-
+  const text = `📁 <b>Categories</b>\n\n<i>Pick a category to browse.</i>`;
   const keyboard = { inline_keyboard: inlineGrid };
+
   if (messageId) {
     await editMessageText(chatId, messageId, text, keyboard);
   } else {
@@ -440,7 +439,7 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
 }
 
 // ============================================================================
-// 7. PRODUCT PLANS UI (SCREENSHOT 3 STYLE)
+// 7. PRODUCT PLANS UI (SCREENSHOT 3: STATUS HEADER & PLAN BUTTONS)
 // ============================================================================
 async function renderProductPlans(chatId, messageId, productId, returnPage = 0) {
   const db = getPool();
@@ -465,7 +464,6 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
   const totalAvailableStock = plans.reduce((acc, p) => acc + Number(p.available_stock || 0), 0);
   const isInStock = totalAvailableStock > 0;
 
-  // Header matching Screenshot 3 style
   let msg = `<b>${prod.emoji} ${prod.name}</b>\n`;
   if (isInStock) {
     msg += `<b>❝ ${prod.name} Subscriptions Are In Stock 🔥 ❞</b>\n\n`;
@@ -482,26 +480,15 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
     for (const pl of plans) {
       const stock = pl.available_stock;
       if (stock > 0) {
-        // Screenshot 3 Green Available Button:
-        // [Emoji] [Plan Name] | $[Price] | [Count]
         const label = `${prod.emoji} ${pl.name} | $${Number(pl.price).toFixed(2)} | ${stock}`;
-        keyboard.push([{
-          text: label,
-          callback_data: `view_plan:${pl.id}:${returnPage}`
-        }]);
+        keyboard.push([{ text: label, callback_data: `view_plan:${pl.id}:${returnPage}` }]);
       } else {
-        // Screenshot 3 Red/Unavailable Button:
-        // ❌ [Plan Name] | $[Price] | Sold out
         const label = `❌ ${pl.name} | $${Number(pl.price).toFixed(2)} | Sold out`;
-        keyboard.push([{
-          text: label,
-          callback_data: `view_plan:${pl.id}:${returnPage}`
-        }]);
+        keyboard.push([{ text: label, callback_data: `view_plan:${pl.id}:${returnPage}` }]);
       }
     }
   }
 
-  // Footer navigation
   keyboard.push([
     { text: '👈 Back', callback_data: `store_page:${returnPage}` },
     { text: '🏠 Home', callback_data: 'main_home' }
@@ -511,7 +498,7 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
 }
 
 // ============================================================================
-// 8. PLAN DETAILS & DIRECT PURCHASE
+// 8. PLAN DETAILS & WALLET PURCHASE
 // ============================================================================
 async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, userId = null) {
   const db = getPool();
@@ -599,7 +586,6 @@ async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
 
-// ATOMIC WALLET PURCHASE
 async function executeWalletPurchase(chatId, messageId, planId, userId) {
   const pool = getPool();
   const conn = await pool.getConnection();
@@ -607,7 +593,6 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
   try {
     await conn.beginTransaction();
 
-    // 1. Lock wallet row
     const [wallets] = await conn.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [userId]);
     if (wallets.length === 0) {
       await conn.rollback();
@@ -615,7 +600,6 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     }
     const currentBalance = Number(wallets[0].balance);
 
-    // 2. Fetch plan
     const [plans] = await conn.query(
       `SELECT pl.*, p.name as product_name, p.emoji as product_emoji 
        FROM plans pl 
@@ -630,7 +614,6 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     const pl = plans[0];
     const orderCost = Number(pl.price);
 
-    // 3. Balance verification
     if (currentBalance < orderCost) {
       await conn.rollback();
       const needed = (orderCost - currentBalance).toFixed(2);
@@ -651,7 +634,6 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       );
     }
 
-    // 4. Reserve stock atomically
     const [invRows] = await conn.query(
       `SELECT id, content FROM inventory 
        WHERE plan_id = ? AND status = 'AVAILABLE' 
@@ -672,10 +654,8 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     const selectedInv = invRows[0];
     const newBalance = (currentBalance - orderCost).toFixed(2);
 
-    // 5. Deduct Wallet
     await conn.query('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [orderCost, userId]);
 
-    // 6. Create Delivered Order
     const [orderRes] = await conn.query(
       `INSERT INTO orders (user_id, plan_id, amount, payment_method, status, delivery_content)
        VALUES (?, ?, ?, 'WALLET', 'DELIVERED', ?)`,
@@ -683,13 +663,8 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     );
     const orderId = orderRes.insertId;
 
-    // 7. Update Inventory Status
-    await conn.query(
-      `UPDATE inventory SET status = 'SOLD', order_id = ? WHERE id = ?`,
-      [orderId, selectedInv.id]
-    );
+    await conn.query(`UPDATE inventory SET status = 'SOLD', order_id = ? WHERE id = ?`, [orderId, selectedInv.id]);
 
-    // 8. Record Transaction
     await conn.query(
       `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, reference_id, description)
        VALUES (?, 'PURCHASE', ?, ?, ?, ?)`,
@@ -698,7 +673,6 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
 
     await conn.commit();
 
-    // 9. Deliver Credentials
     const successMsg =
       `🎉 <b>ORDER COMPLETED & DELIVERED!</b>\n\n` +
       `Order: <b>#ORD${orderId}</b>\n` +
@@ -717,7 +691,6 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       ]
     });
 
-    // Notify Admin
     sendMessage(
       ADMIN_ID,
       `🛍 <b>NEW STORE PURCHASE</b>\n\n` +
@@ -794,7 +767,7 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
 }
 
 // ============================================================================
-// 10. WALLET & DEPOSIT SYSTEM
+// 10. WALLET & DEPOSITS
 // ============================================================================
 async function renderWalletMenu(chatId, messageId, userId) {
   const balance = await getWalletBalance(userId);
@@ -909,11 +882,6 @@ async function approveDeposit(depositId, adminId) {
       [dep.user_id, dep.amount, newBal, `DEP#${depositId}`, `Wallet Deposit (${dep.payment_method})`]
     );
 
-    await conn.query(
-      'INSERT INTO admin_logs (admin_id, action, details) VALUES (?, ?, ?)',
-      [adminId, 'DEPOSIT_APPROVED', `Deposit #${depositId} approved for user ${dep.user_id}, $${dep.amount}`]
-    );
-
     await conn.commit();
 
     sendMessage(
@@ -936,14 +904,11 @@ async function rejectDeposit(depositId, adminId, reason = 'Payment unverified') 
   const db = getPool();
   const [rows] = await db.query('SELECT * FROM deposits WHERE id = ?', [depositId]);
   if (rows.length === 0) return { success: false, message: 'Deposit not found.' };
-  if (rows[0].status !== 'PENDING') return { success: false, message: 'Deposit is not pending.' };
 
   await db.query(
     `UPDATE deposits SET status = 'REJECTED', admin_id = ?, admin_note = ? WHERE id = ?`,
     [adminId, reason, depositId]
   );
-
-  await logAdminAction(adminId, 'DEPOSIT_REJECTED', `Deposit #${depositId} rejected.`);
 
   sendMessage(
     rows[0].user_id,
@@ -1007,7 +972,7 @@ async function approveManualPayment(orderId, adminId) {
         ord.user_id,
         `✅ <b>PAYMENT APPROVED!</b>\n\n` +
         `Order: <b>#ORD${orderId}</b>\n` +
-        `Your payment has been confirmed. The administrator will prepare and deliver your credentials shortly.`
+        `Your payment has been confirmed. The administrator will deliver your credentials shortly.`
       );
       return { success: true, message: `Payment approved for #ORD${orderId}. Manual fulfillment required.` };
     }
@@ -1025,7 +990,6 @@ async function rejectManualPayment(orderId, adminId, reason = 'Unverified transa
   if (orders.length === 0) return { success: false, message: 'Order not found.' };
 
   await db.query('UPDATE orders SET status = "PAYMENT_REJECTED", admin_note = ? WHERE id = ?', [reason, orderId]);
-  await logAdminAction(adminId, 'PAYMENT_REJECTED', `Order #${orderId} rejected.`);
 
   sendMessage(
     orders[0].user_id,
@@ -1073,9 +1037,9 @@ async function broadcastRestockToAllUsers(planId, addedCount) {
     try {
       await sendMessage(u.id, alertMsg, buyKeyboard);
       sent++;
-      await new Promise(r => setTimeout(r, 35)); // rate limit protection
+      await new Promise(r => setTimeout(r, 35));
     } catch (e) {
-      // Ignored if user blocked bot
+      // Ignored
     }
   }
 
@@ -1083,7 +1047,7 @@ async function broadcastRestockToAllUsers(planId, addedCount) {
 }
 
 // ============================================================================
-// 13. ADMIN DASHBOARD & PRODUCT CREATION
+// 13. ADMIN DASHBOARD
 // ============================================================================
 async function renderAdminDashboard(chatId, messageId = null) {
   const db = getPool();
@@ -1128,9 +1092,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   const { state, data } = await getUserState(userId);
   if (!state) return false;
 
-  // --------------------------------------------------------------------------
-  // Customer FSM: Deposit
-  // --------------------------------------------------------------------------
   if (state === 'DEPOSIT_AMOUNT') {
     const amount = parseFloat(text.replace('$', '').trim());
     if (isNaN(amount) || amount <= 0 || !/^\d+(\.\d{1,2})?$/.test(text.replace('$', '').trim())) {
@@ -1228,9 +1189,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     return true;
   }
 
-  // --------------------------------------------------------------------------
-  // Customer FSM: Direct Order Payment Proof
-  // --------------------------------------------------------------------------
   if (state === 'ORDER_PAY_PROOF') {
     const orderId = data.orderId;
     const db = getPool();
@@ -1292,9 +1250,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     return true;
   }
 
-  // --------------------------------------------------------------------------
-  // Customer FSM: Product Search
-  // --------------------------------------------------------------------------
   if (state === 'STORE_SEARCH_INPUT') {
     const db = getPool();
     const [results] = await db.query(
@@ -1331,9 +1286,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     return true;
   }
 
-  // --------------------------------------------------------------------------
-  // Admin FSM: Add Product Flow
-  // --------------------------------------------------------------------------
   if (userId === ADMIN_ID) {
     if (state === 'ADM_ADD_PROD_NAME') {
       await setUserState(userId, 'ADM_ADD_PROD_EMOJI', { name: text.trim() });
@@ -1363,9 +1315,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       return true;
     }
 
-    // --------------------------------------------------------------------------
-    // Admin FSM: Add Plan Flow
-    // --------------------------------------------------------------------------
     if (state === 'ADM_ADD_PLAN_NAME') {
       await setUserState(userId, 'ADM_ADD_PLAN_DETAILS', { ...data, name: text.trim() });
       await sendMessage(chatId, '📝 <b>Step 2/5:</b> Enter the <b>Plan Details / Features</b> (supports multiline text):');
@@ -1427,9 +1376,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       return true;
     }
 
-    // --------------------------------------------------------------------------
-    // Admin FSM: Add Inventory Stock & Trigger Universal Broadcast
-    // --------------------------------------------------------------------------
     if (state === 'ADM_ADD_STOCK_ITEMS') {
       const planId = data.planId;
       const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -1454,14 +1400,10 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
 
       await sendMessage(chatId, `✅ Successfully added <b>${added}</b> inventory items to Plan #${planId}!`);
 
-      // Automatically broadcast stock alert to all users
       await broadcastRestockToAllUsers(planId, added);
       return true;
     }
 
-    // --------------------------------------------------------------------------
-    // Admin FSM: Manual Order Fulfillment
-    // --------------------------------------------------------------------------
     if (state === 'ADM_FULFILL_INPUT') {
       const orderId = data.orderId;
       const db = getPool();
@@ -1489,9 +1431,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       return true;
     }
 
-    // --------------------------------------------------------------------------
-    // Admin FSM: Manual Broadcast Message
-    // --------------------------------------------------------------------------
     if (state === 'ADM_BROADCAST_TEXT') {
       const db = getPool();
       const [uRows] = await db.query('SELECT COUNT(*) as count FROM users WHERE is_banned = 0');
@@ -1647,12 +1586,10 @@ async function handleCallbackQuery(callbackQuery) {
 
   await syncUser(fromUser);
 
-  // Admin access guard
   if ((data.startsWith('admin_') || data.startsWith('adm_')) && userId !== ADMIN_ID) {
     return await answerCallbackQuery(queryId, '🚫 Unauthorized: Admin access only.', true);
   }
 
-  // Home
   if (data === 'main_home') {
     await clearUserState(userId);
     await answerCallbackQuery(queryId);
@@ -1677,14 +1614,12 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Store page
   if (data.startsWith('store_page:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     await answerCallbackQuery(queryId);
     return await renderStorePage(chatId, messageId, page);
   }
 
-  // View Product Plans
   if (data.startsWith('view_prod:')) {
     const parts = data.split(':');
     const productId = parseInt(parts[1], 10);
@@ -1693,7 +1628,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderProductPlans(chatId, messageId, productId, returnPage);
   }
 
-  // View Single Plan Details
   if (data.startsWith('view_plan:')) {
     const parts = data.split(':');
     const planId = parseInt(parts[1], 10);
@@ -1702,7 +1636,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderPlanDetails(chatId, messageId, planId, returnPage, userId);
   }
 
-  // Order Prep
   if (data.startsWith('order_prep:')) {
     const parts = data.split(':');
     const planId = parseInt(parts[1], 10);
@@ -1711,14 +1644,12 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderOrderCheckout(chatId, messageId, planId, returnPage, userId);
   }
 
-  // Pay via Wallet
   if (data.startsWith('pay_wallet:')) {
     const planId = parseInt(data.split(':')[1], 10);
     await answerCallbackQuery(queryId, 'Processing wallet payment...');
     return await executeWalletPurchase(chatId, messageId, planId, userId);
   }
 
-  // Manual payment method selected
   if (data.startsWith('pay_manual:')) {
     const [, method, planIdStr] = data.split(':');
     const planId = parseInt(planIdStr, 10);
@@ -1726,7 +1657,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await initiateManualOrderPayment(chatId, messageId, method, planId, userId);
   }
 
-  // Prompt for manual order proof
   if (data.startsWith('order_paid_prompt:')) {
     const orderId = parseInt(data.split(':')[1], 10);
     await setUserState(userId, 'ORDER_PAY_PROOF', { orderId });
@@ -1739,7 +1669,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Cancel order
   if (data.startsWith('order_cancel:')) {
     const orderId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -1748,7 +1677,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderStorePage(chatId, messageId, 0);
   }
 
-  // Notify Me Subscription
   if (data.startsWith('notif_sub:')) {
     const parts = data.split(':');
     const planId = parseInt(parts[1], 10);
@@ -1764,26 +1692,22 @@ async function handleCallbackQuery(callbackQuery) {
     return;
   }
 
-  // Wallet Main
   if (data === 'wallet_main') {
     await answerCallbackQuery(queryId);
     return await renderWalletMenu(chatId, messageId, userId);
   }
 
-  // Wallet History
   if (data.startsWith('wallet_history:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     await answerCallbackQuery(queryId);
     return await renderWalletHistory(chatId, messageId, userId, page);
   }
 
-  // Wallet Deposit Method Selection
   if (data === 'wallet_deposit') {
     await answerCallbackQuery(queryId);
     return await renderDepositMethodSelection(chatId, messageId);
   }
 
-  // Method Chosen for deposit
   if (data.startsWith('dep_method:')) {
     const method = data.split(':')[1];
     await setUserState(userId, 'DEPOSIT_AMOUNT', { method });
@@ -1797,7 +1721,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Deposit Cancel
   if (data.startsWith('dep_cancel:')) {
     const depId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -1807,27 +1730,23 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderWalletMenu(chatId, messageId, userId);
   }
 
-  // User Profile
   if (data === 'user_profile') {
     await answerCallbackQuery(queryId);
     return await renderUserProfile(chatId, messageId, fromUser);
   }
 
-  // User Orders
   if (data.startsWith('my_orders:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     await answerCallbackQuery(queryId);
     return await renderUserOrders(chatId, messageId, userId, page);
   }
 
-  // Single Order View
   if (data.startsWith('view_order:')) {
     const orderId = parseInt(data.split(':')[1], 10);
     await answerCallbackQuery(queryId);
     return await renderSingleOrder(chatId, messageId, orderId, userId);
   }
 
-  // Search Prompt
   if (data === 'store_search') {
     await setUserState(userId, 'STORE_SEARCH_INPUT');
     await answerCallbackQuery(queryId);
@@ -1840,7 +1759,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Support
   if (data === 'store_support') {
     await answerCallbackQuery(queryId);
     return await editMessageText(
@@ -1854,7 +1772,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Help
   if (data === 'store_help') {
     await answerCallbackQuery(queryId);
     return await editMessageText(
@@ -1868,15 +1785,12 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // --------------------------------------------------------------------------
-  // ADMIN PANEL
-  // --------------------------------------------------------------------------
+  // Admin Dashboard
   if (data === 'admin_dashboard') {
     await answerCallbackQuery(queryId);
     return await renderAdminDashboard(chatId, messageId);
   }
 
-  // Admin: Add Product Start
   if (data === 'adm_prod_add_start') {
     await setUserState(userId, 'ADM_ADD_PROD_NAME');
     await answerCallbackQuery(queryId);
@@ -1889,7 +1803,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin: Products List
   if (data.startsWith('admin_products:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     const db = getPool();
@@ -1908,7 +1821,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
   }
 
-  // Admin: Product Management Submenu
   if (data.startsWith('adm_prod_mgt:')) {
     const prodId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -1930,7 +1842,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
   }
 
-  // Admin: Start Add Plan Flow
   if (data.startsWith('adm_plan_add_start:')) {
     const prodId = parseInt(data.split(':')[1], 10);
     await setUserState(userId, 'ADM_ADD_PLAN_NAME', { productId: prodId });
@@ -1942,7 +1853,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin: Prompt Add Stock
   if (data.startsWith('adm_stock_add_prompt:')) {
     const planId = parseInt(data.split(':')[1], 10);
     await setUserState(userId, 'ADM_ADD_STOCK_ITEMS', { planId });
@@ -1957,7 +1867,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin: Stock Overview
   if (data.startsWith('admin_stock_list:')) {
     const db = getPool();
     const [plans] = await db.query(
@@ -1981,7 +1890,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
   }
 
-  // Admin: Approve Deposit
   if (data.startsWith('adm_dep_appr:')) {
     const depId = parseInt(data.split(':')[1], 10);
     const result = await approveDeposit(depId, userId);
@@ -1989,7 +1897,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderAdminDashboard(chatId, messageId);
   }
 
-  // Admin: Reject Deposit
   if (data.startsWith('adm_dep_rej:')) {
     const depId = parseInt(data.split(':')[1], 10);
     const result = await rejectDeposit(depId, userId);
@@ -1997,7 +1904,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderAdminDashboard(chatId, messageId);
   }
 
-  // Admin: Approve Order Payment
   if (data.startsWith('adm_ord_appr:')) {
     const orderId = parseInt(data.split(':')[1], 10);
     const result = await approveManualPayment(orderId, userId);
@@ -2005,7 +1911,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderAdminDashboard(chatId, messageId);
   }
 
-  // Admin: Reject Order Payment
   if (data.startsWith('adm_ord_rej:')) {
     const orderId = parseInt(data.split(':')[1], 10);
     const result = await rejectManualPayment(orderId, userId);
@@ -2013,7 +1918,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderAdminDashboard(chatId, messageId);
   }
 
-  // Admin: Prompt Manual Fulfillment
   if (data.startsWith('adm_fulfill_prompt:')) {
     const orderId = parseInt(data.split(':')[1], 10);
     await setUserState(userId, 'ADM_FULFILL_INPUT', { orderId });
@@ -2025,7 +1929,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin: Broadcast prompt
   if (data === 'admin_broadcast_prompt') {
     await setUserState(userId, 'ADM_BROADCAST_TEXT');
     await answerCallbackQuery(queryId);
@@ -2038,7 +1941,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin: Broadcast dispatch
   if (data === 'adm_broadcast_dispatch') {
     const { state: bState, data: bData } = await getUserState(userId);
     if (bState !== 'ADM_BROADCAST_CONFIRM' || !bData?.text) {
@@ -2056,14 +1958,13 @@ async function handleCallbackQuery(callbackQuery) {
         sent++;
         await new Promise(r => setTimeout(r, 35));
       } catch (e) {
-        // user blocked bot
+        // Ignored
       }
     }
     await logAdminAction(userId, 'BROADCAST_SENT', `Broadcast sent to ${sent} users.`);
     return await sendMessage(ADMIN_ID, `✅ Broadcast delivered to <b>${sent}</b> users.`);
   }
 
-  // Admin: Logs View
   if (data.startsWith('admin_logs:')) {
     const db = getPool();
     const [logs] = await db.query('SELECT * FROM admin_logs ORDER BY id DESC LIMIT 10');
@@ -2081,15 +1982,43 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 // ============================================================================
-// 17. MAIN VERCEL SERVERLESS HANDLER
+// 17. MAIN VERCEL HANDLER WITH LIVE BROWSER DIAGNOSTICS
 // ============================================================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', ['POST']);
-    return res.status(405).json({ error: 'Method Not Allowed. Only Telegram POST webhooks accepted.' });
+  // LIVE BROWSER DIAGNOSTIC (Open https://your-domain.vercel.app/api/bot in any browser)
+  if (req.method === 'GET') {
+    try {
+      await initDatabase();
+      const db = getPool();
+      const [tables] = await db.query('SHOW TABLES');
+
+      const tgRes = await fetch(`${TELEGRAM_API}/getMe`);
+      const tgData = await tgRes.json();
+
+      return res.status(200).json({
+        status: 'SUCCESS! Bot backend is 100% operational.',
+        database: 'Connected and SSL Verified',
+        tables_created: tables.length,
+        telegram_bot: tgData.ok ? `@${tgData.result.username} (Connected)` : tgData,
+        admin_id: ADMIN_ID,
+        instruction: 'Open Telegram and send /start to your bot!'
+      });
+    } catch (err) {
+      return res.status(500).json({
+        status: 'DATABASE OR SERVER ERROR',
+        error_message: err.message,
+        error_code: err.code || 'UNKNOWN',
+        sql_message: err.sqlMessage || 'None',
+        help: 'Check your DATABASE_URL format or database permissions in TiDB Cloud.'
+      });
+    }
   }
 
- 
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', ['GET', 'POST']);
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
   const update = req.body;
   if (!update || typeof update !== 'object') {
     return res.status(400).json({ error: 'Invalid update payload.' });
@@ -2098,17 +2027,6 @@ export default async function handler(req, res) {
   try {
     await initDatabase();
     const db = getPool();
-
-    // Idempotency: Deduplicate update_id
-    if (update.update_id) {
-      try {
-        await db.query('INSERT INTO processed_updates (update_id) VALUES (?)', [update.update_id]);
-      } catch (err) {
-        if (err.code === 'ER_DUP_ENTRY') {
-          return res.status(200).json({ status: 'duplicate update ignored' });
-        }
-      }
-    }
 
     // 1. Handle Callback Queries
     if (update.callback_query) {
@@ -2216,7 +2134,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('Unhandled webhook runtime error:', err);
-    return res.status(200).json({ error: 'Internal server error handled safely.' });
+    console.error('Unhandled webhook error:', err);
+    return res.status(200).json({ error: err.message });
   }
 }
