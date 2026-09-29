@@ -54,6 +54,10 @@ function getPool() {
     }
     pool = mysql.createPool({
       uri: DATABASE_URL,
+      ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+      },
       waitForConnections: true,
       connectionLimit: 10,
       maxIdle: 5,
