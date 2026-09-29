@@ -2091,11 +2091,11 @@ export default async function handler(req, res) {
 
   if (WEBHOOK_SECRET) {
     const secretHeader = req.headers['x-telegram-bot-api-secret-token'];
-    if (secretHeader !== WEBHOOK_SECRET) {
+    if (secretHeader && secretHeader !== WEBHOOK_SECRET) {
+      console.warn('Secret header mismatch:', secretHeader);
       return res.status(401).json({ error: 'Unauthorized webhook call.' });
     }
   }
-
   const update = req.body;
   if (!update || typeof update !== 'object') {
     return res.status(400).json({ error: 'Invalid update payload.' });
