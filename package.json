@@ -1,0 +1,17 @@
+{
+  "name": "isell-store-telegram-bot",
+  "version": "1.0.0",
+  "description": "ISell Store - Complete Serverless Telegram Digital Selling Marketplace",
+  "main": "api/bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node api/bot.js",
+    "test": "echo \"Ready for deployment\" && exit 0"
+  },
+  "dependencies": {
+    "mysql2": "^3.9.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

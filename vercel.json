@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "src": "/api/bot",
+      "dest": "/api/bot.js"
+    }
+  ],
+  "env": {
+    "NODE_OPTIONS": "--enable-source-maps"
+  }
+}
