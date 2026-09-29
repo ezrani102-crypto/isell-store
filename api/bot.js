@@ -1,5 +1,6 @@
 // ============================================================================
-// ISELL STORE — COMPLETE TELEGRAM SELLING BOT FOR VERCEL SERVERLESS
+// ISELL STORE — PREMIUM TELEGRAM SELLING MARKETPLACE
+// Optimized for Vercel Serverless & Cloud MySQL (TiDB / PlanetScale / Aiven)
 // ============================================================================
 
 import mysql from 'mysql2/promise';
@@ -18,32 +19,8 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-const INITIAL_CATALOG = [
-  'ChatGPT', 'Canva', 'Spotify', 'Gamma AI', 'Netflix',
-  'Duolingo', 'YouTube', 'Microsoft 365', 'Turnitin', 'Adobe',
-  'Claude', 'Grok', 'Elsa Speaks', 'Figma', 'Veo 4',
-  'CapCut', 'Kling', 'Cursor', 'Zoom', 'Scribd',
-  'HeyGen', 'ElevenLabs', 'Wink', 'Meitu', 'TradingView',
-  'HMA VPN', 'Discord Nitro', 'ExpressVPN', 'Windows Key', 'Freepik',
-  'iCloud', 'Quizizz', 'Perplexity', 'Wordwall', 'Notion',
-  'Suno', 'Gemini', 'Higgsfield', 'Kiro', 'Dreamina',
-  'OpenArt', 'Quizlet', 'Coursera', 'Kimi', 'ArtCraft'
-];
-
-const EMOJI_MAP = {
-  'ChatGPT': '🤖', 'Canva': '🎨', 'Spotify': '🎵', 'Gamma AI': '⚡', 'Netflix': '🎬',
-  'Duolingo': '🦉', 'YouTube': '▶️', 'Microsoft 365': '💼', 'Turnitin': '📝', 'Adobe': '🔺',
-  'Claude': '🟣', 'Grok': '🧠', 'Elsa Speaks': '🗣', 'Figma': '📐', 'Veo 4': '🎥',
-  'CapCut': '✂️', 'Kling': '🎞', 'Cursor': '💻', 'Zoom': '📹', 'Scribd': '📚',
-  'HeyGen': '👤', 'ElevenLabs': '🎙', 'Wink': '✨', 'Meitu': '💄', 'TradingView': '📈',
-  'HMA VPN': '🦙', 'Discord Nitro': '🚀', 'ExpressVPN': '🛡', 'Windows Key': '🪟', 'Freepik': '🖼',
-  'iCloud': '☁️', 'Quizizz': '❓', 'Perplexity': '🔍', 'Wordwall': '🧩', 'Notion': '📓',
-  'Suno': '🎼', 'Gemini': '♊', 'Higgsfield': '🌌', 'Kiro': '💎', 'Dreamina': '🌙',
-  'OpenArt': '🎭', 'Quizlet': '💡', 'Coursera': '🎓', 'Kimi': '🌟', 'ArtCraft': '🖌'
-};
-
 // ============================================================================
-// 2. DATABASE CLIENT & POOLING
+// 2. DATABASE POOL (WITH MANDATORY SSL FOR CLOUD MYSQL)
 // ============================================================================
 let pool = null;
 
@@ -203,27 +180,6 @@ async function initDatabase() {
       FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
     ) ENGINE=InnoDB;`,
 
-    `CREATE TABLE IF NOT EXISTS notifications (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      user_id BIGINT NOT NULL,
-      title VARCHAR(255) NOT NULL,
-      message TEXT NOT NULL,
-      is_read TINYINT(1) DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    ) ENGINE=InnoDB;`,
-
-    `CREATE TABLE IF NOT EXISTS broadcasts (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      admin_id BIGINT NOT NULL,
-      message_text TEXT NOT NULL,
-      target_type VARCHAR(50) NOT NULL DEFAULT 'ALL',
-      total_recipients INT DEFAULT 0,
-      successful_count INT DEFAULT 0,
-      failed_count INT DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB;`,
-
     `CREATE TABLE IF NOT EXISTS admin_logs (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       admin_id BIGINT NOT NULL,
@@ -237,24 +193,11 @@ async function initDatabase() {
     await db.query(q);
   }
 
-  // Seed Catalog if not populated
-  const [existing] = await db.query('SELECT COUNT(*) as count FROM products');
-  if (existing[0].count === 0) {
-    for (let i = 0; i < INITIAL_CATALOG.length; i++) {
-      const name = INITIAL_CATALOG[i];
-      const emoji = EMOJI_MAP[name] || '📦';
-      await db.query(
-        'INSERT IGNORE INTO products (name, emoji, sort_order) VALUES (?, ?, ?)',
-        [name, emoji, i]
-      );
-    }
-  }
-
   dbInitialized = true;
 }
 
 // ============================================================================
-// 3. TELEGRAM API UTILITIES
+// 3. TELEGRAM BOT API CALLS
 // ============================================================================
 async function callTelegram(method, payload = {}) {
   try {
@@ -275,27 +218,14 @@ async function callTelegram(method, payload = {}) {
 }
 
 async function sendMessage(chatId, text, replyMarkup = null, parseMode = 'HTML') {
-  const payload = {
-    chat_id: chatId,
-    text,
-    parse_mode: parseMode
-  };
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
+  const payload = { chat_id: chatId, text, parse_mode: parseMode };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
   return await callTelegram('sendMessage', payload);
 }
 
 async function editMessageText(chatId, messageId, text, replyMarkup = null, parseMode = 'HTML') {
-  const payload = {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-    parse_mode: parseMode
-  };
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
+  const payload = { chat_id: chatId, message_id: messageId, text, parse_mode: parseMode };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
   return await callTelegram('editMessageText', payload);
 }
 
@@ -309,20 +239,13 @@ async function answerCallbackQuery(callbackQueryId, text = null, showAlert = fal
 }
 
 async function sendPhoto(chatId, fileId, caption = '', replyMarkup = null) {
-  const payload = {
-    chat_id: chatId,
-    photo: fileId,
-    caption,
-    parse_mode: 'HTML'
-  };
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
+  const payload = { chat_id: chatId, photo: fileId, caption, parse_mode: 'HTML' };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
   return await callTelegram('sendPhoto', payload);
 }
 
 // ============================================================================
-// 4. USER & WALLET HELPERS
+// 4. USER & WALLET SYSTEM
 // ============================================================================
 async function syncUser(user) {
   const db = getPool();
@@ -335,11 +258,7 @@ async function syncUser(user) {
        last_name = VALUES(last_name)`,
     [user.id, user.username || null, user.first_name || null, user.last_name || null]
   );
-
-  await db.query(
-    `INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0.00)`,
-    [user.id]
-  );
+  await db.query(`INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0.00)`, [user.id]);
 }
 
 async function getWalletBalance(userId) {
@@ -386,14 +305,14 @@ async function clearUserState(userId) {
 }
 
 // ============================================================================
-// 5. KEYBOARD FACTORIES
+// 5. NAVIGATION KEYBOARDS
 // ============================================================================
 function getCustomerMainMenuKeyboard(userId) {
   const buttons = [
-    [{ text: '🛍 Store', callback_data: 'store_page:0' }, { text: '💰 Wallet', callback_data: 'wallet_main' }],
-    [{ text: '📦 My Orders', callback_data: 'my_orders:0' }, { text: '🔔 Notifications', callback_data: 'notifs_view' }],
+    [{ text: '📁 Browse Categories / Store', callback_data: 'store_page:0' }],
+    [{ text: '💰 My Wallet', callback_data: 'wallet_main' }, { text: '📦 My Orders', callback_data: 'my_orders:0' }],
     [{ text: '👤 Profile', callback_data: 'user_profile' }, { text: '🔎 Search', callback_data: 'store_search' }],
-    [{ text: '📞 Support', callback_data: 'store_support' }, { text: 'ℹ️ Help', callback_data: 'store_help' }]
+    [{ text: '📞 Support', callback_data: 'store_support' }, { text: 'ℹ️ FAQ & Help', callback_data: 'store_help' }]
   ];
   if (userId === ADMIN_ID) {
     buttons.push([{ text: '⚙️ Admin Panel', callback_data: 'admin_dashboard' }]);
@@ -404,25 +323,25 @@ function getCustomerMainMenuKeyboard(userId) {
 function getAdminPanelKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: '📊 Dashboard', callback_data: 'admin_dashboard' }, { text: '🛍 Products', callback_data: 'admin_products:0' }],
-      [{ text: '📦 Inventory', callback_data: 'admin_stock_list:0' }, { text: '🧾 Orders', callback_data: 'admin_orders:0' }],
+      [{ text: '📊 Dashboard', callback_data: 'admin_dashboard' }, { text: '🛍 Products & Plans', callback_data: 'admin_products:0' }],
+      [{ text: '➕ Add Product', callback_data: 'adm_prod_add_start' }, { text: '📦 Inventory Stock', callback_data: 'admin_stock_list:0' }],
       [{ text: '💳 Pending Payments', callback_data: 'admin_payments:0' }, { text: '💰 Pending Deposits', callback_data: 'admin_deposits:0' }],
-      [{ text: '👥 Users', callback_data: 'admin_users' }, { text: '📢 Broadcast', callback_data: 'admin_broadcast_prompt' }],
-      [{ text: '📝 Logs', callback_data: 'admin_logs:0' }, { text: '🛍 View Customer Store', callback_data: 'store_page:0' }],
+      [{ text: '📢 Manual Broadcast', callback_data: 'admin_broadcast_prompt' }, { text: '📝 Logs', callback_data: 'admin_logs:0' }],
+      [{ text: '🛍 Open Customer View', callback_data: 'store_page:0' }],
       [{ text: '🏠 Home', callback_data: 'main_home' }]
     ]
   };
 }
 
 // ============================================================================
-// 6. CUSTOMER STORE & CATALOG LOGIC
+// 6. STORE CATALOG UI (SCREENSHOT 2 STYLE: 2-COLUMN, CLEAN BLUE LABELS)
 // ============================================================================
 async function renderStorePage(chatId, messageId = null, page = 0) {
   const db = getPool();
-  const PAGE_SIZE = 15;
+  const PAGE_SIZE = 14;
   const offset = page * PAGE_SIZE;
 
-  // Retrieve products with active plan & available stock indicator
+  // Retrieve products and calculate active inventory
   const [products] = await db.query(
     `SELECT p.id, p.name, p.emoji,
       (SELECT COUNT(i.id) 
@@ -442,19 +361,43 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
   const totalProducts = totalRow[0].count;
   const totalPages = Math.ceil(totalProducts / PAGE_SIZE) || 1;
 
-  // 3-column inline grid
+  if (totalProducts === 0) {
+    const emptyText =
+      `📁 <b>Categories</b>\n\n` +
+      `<i>No products have been added yet.</i>\n\n` +
+      (chatId === ADMIN_ID ? `👉 <b>Admin Tip:</b> Use the <b>Admin Panel</b> to create products and plans!` : `Please check back shortly!`);
+
+    const emptyKeyboard = {
+      inline_keyboard: [
+        chatId === ADMIN_ID ? [{ text: '➕ Add First Product', callback_data: 'adm_prod_add_start' }] : [],
+        [{ text: '🏠 Home', callback_data: 'main_home' }]
+      ].filter(r => r.length > 0)
+    };
+
+    if (messageId) {
+      await editMessageText(chatId, messageId, emptyText, emptyKeyboard);
+    } else {
+      await sendMessage(chatId, emptyText, emptyKeyboard);
+    }
+    return;
+  }
+
+  // 2-Column Grid (Screenshot 2 style)
   const inlineGrid = [];
   let currentRow = [];
 
   for (const item of products) {
     const hasStock = item.stock_count > 0;
-    const indicator = hasStock ? '🟢' : '❌';
-    const label = `${indicator} ${item.emoji} ${item.name}`;
+    // Blue/Available products display normally with their icon;
+    // out of stock products show a red indicator dot.
+    const label = hasStock ? `${item.emoji} ${item.name}` : `🔴 ${item.emoji} ${item.name}`;
+
     currentRow.push({
       text: label,
       callback_data: `view_prod:${item.id}:${page}`
     });
-    if (currentRow.length === 3) {
+
+    if (currentRow.length === 2) {
       inlineGrid.push(currentRow);
       currentRow = [];
     }
@@ -463,16 +406,21 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     inlineGrid.push(currentRow);
   }
 
-  // Navigation & utility row
+  // Navigation rows
   const navRow = [];
   if (page > 0) {
     navRow.push({ text: '◀️ Prev', callback_data: `store_page:${page - 1}` });
   }
-  navRow.push({ text: `🔄 Refresh (${page + 1}/${totalPages})`, callback_data: `store_page:${page}` });
+  if (totalPages > 1) {
+    navRow.push({ text: `Page ${page + 1}/${totalPages}`, callback_data: `store_page:${page}` });
+  }
   if (page + 1 < totalPages) {
     navRow.push({ text: 'Next ▶️', callback_data: `store_page:${page + 1}` });
   }
-  inlineGrid.push(navRow);
+  if (navRow.length > 0) {
+    inlineGrid.push(navRow);
+  }
+
   inlineGrid.push([
     { text: '🔎 Search', callback_data: 'store_search' },
     { text: '💰 Wallet', callback_data: 'wallet_main' },
@@ -480,10 +428,8 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
   ]);
 
   const text =
-    `🛍 <b>${STORE_NAME} — Digital Marketplace</b>\n\n` +
-    `Select a product below to view available packages.\n` +
-    `🟢 = In Stock | ❌ = Out of Stock\n\n` +
-    `<i>Real-time stock synced directly with store warehouse.</i>`;
+    `📁 <b>Categories</b>\n\n` +
+    `<i>Pick a category to browse.</i>`;
 
   const keyboard = { inline_keyboard: inlineGrid };
   if (messageId) {
@@ -493,12 +439,15 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
   }
 }
 
+// ============================================================================
+// 7. PRODUCT PLANS UI (SCREENSHOT 3 STYLE)
+// ============================================================================
 async function renderProductPlans(chatId, messageId, productId, returnPage = 0) {
   const db = getPool();
   const [prods] = await db.query('SELECT * FROM products WHERE id = ?', [productId]);
   if (prods.length === 0) {
     await editMessageText(chatId, messageId, '❌ Product not found.', {
-      inline_keyboard: [[{ text: '◀️ Back to Catalog', callback_data: `store_page:${returnPage}` }]]
+      inline_keyboard: [[{ text: '👈 Back', callback_data: `store_page:${returnPage}` }]]
     });
     return;
   }
@@ -513,35 +462,57 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
     [productId]
   );
 
-  let msg = `<b>${prod.emoji} ${prod.name.toUpperCase()}</b>\n\n`;
-  if (prod.description) {
-    msg += `<i>${prod.description}</i>\n\n`;
+  const totalAvailableStock = plans.reduce((acc, p) => acc + Number(p.available_stock || 0), 0);
+  const isInStock = totalAvailableStock > 0;
+
+  // Header matching Screenshot 3 style
+  let msg = `<b>${prod.emoji} ${prod.name}</b>\n`;
+  if (isInStock) {
+    msg += `<b>❝ ${prod.name} Subscriptions Are In Stock 🔥 ❞</b>\n\n`;
+  } else {
+    msg += `<b>❝ Currently Sold Out ⏳ Check back soon! ❞</b>\n\n`;
   }
-  msg += `Please choose a subscription plan:`;
+
+  msg += `<i>${plans.length} options — tap one to see the details.</i>`;
 
   const keyboard = [];
   if (plans.length === 0) {
     msg += `\n\n❌ <i>No active plans configured for this product yet.</i>`;
   } else {
     for (const pl of plans) {
-      const inStock = pl.available_stock > 0;
-      const statusIcon = inStock ? '🟢' : '❌';
-      const label = `${statusIcon} ${pl.name} — $${Number(pl.price).toFixed(2)} (${inStock ? `${pl.available_stock} Avail` : 'Sold Out'})`;
-      keyboard.push([{
-        text: label,
-        callback_data: `view_plan:${pl.id}:${returnPage}`
-      }]);
+      const stock = pl.available_stock;
+      if (stock > 0) {
+        // Screenshot 3 Green Available Button:
+        // [Emoji] [Plan Name] | $[Price] | [Count]
+        const label = `${prod.emoji} ${pl.name} | $${Number(pl.price).toFixed(2)} | ${stock}`;
+        keyboard.push([{
+          text: label,
+          callback_data: `view_plan:${pl.id}:${returnPage}`
+        }]);
+      } else {
+        // Screenshot 3 Red/Unavailable Button:
+        // ❌ [Plan Name] | $[Price] | Sold out
+        const label = `❌ ${pl.name} | $${Number(pl.price).toFixed(2)} | Sold out`;
+        keyboard.push([{
+          text: label,
+          callback_data: `view_plan:${pl.id}:${returnPage}`
+        }]);
+      }
     }
   }
 
+  // Footer navigation
   keyboard.push([
-    { text: '🔄 Refresh Plans', callback_data: `view_prod:${productId}:${returnPage}` },
-    { text: '◀️ Back to Catalog', callback_data: `store_page:${returnPage}` }
+    { text: '👈 Back', callback_data: `store_page:${returnPage}` },
+    { text: '🏠 Home', callback_data: 'main_home' }
   ]);
 
   await editMessageText(chatId, messageId, msg, { inline_keyboard: keyboard });
 }
 
+// ============================================================================
+// 8. PLAN DETAILS & DIRECT PURCHASE
+// ============================================================================
 async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, userId = null) {
   const db = getPool();
   const [plans] = await db.query(
@@ -555,7 +526,7 @@ async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, user
 
   if (plans.length === 0) {
     await editMessageText(chatId, messageId, '❌ Plan not found.', {
-      inline_keyboard: [[{ text: '◀️ Back', callback_data: `store_page:${returnPage}` }]]
+      inline_keyboard: [[{ text: '👈 Back', callback_data: `store_page:${returnPage}` }]]
     });
     return;
   }
@@ -565,30 +536,27 @@ async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, user
   let msg =
     `<b>${pl.product_emoji} ${pl.product_name} — ${pl.name}</b>\n\n` +
     `📋 <b>DETAILS:</b>\n` +
-    `${pl.details || 'Instant digital delivery upon fulfillment.'}\n\n` +
+    `${pl.details || 'Instant digital fulfillment upon purchase.'}\n\n` +
     `💵 <b>Price:</b> $${Number(pl.price).toFixed(2)} ${pl.currency}\n` +
     `⏱️ <b>Duration:</b> ${pl.duration_text}\n` +
     `🛡️ <b>Warranty:</b> ${pl.warranty_text}\n` +
-    `📦 <b>Available:</b> ${inStock ? `${pl.available_stock} in stock` : '❌ OUT OF STOCK'}\n`;
+    `📦 <b>Stock:</b> ${inStock ? `🟢 ${pl.available_stock} Available` : '🔴 Sold Out'}\n`;
 
   const buttons = [];
   if (inStock) {
     buttons.push([{ text: '🛒 BUY NOW', callback_data: `order_prep:${pl.id}:${returnPage}` }]);
   } else {
-    buttons.push([{ text: '🔔 Notify Me When Available', callback_data: `notif_sub:${pl.id}:${returnPage}` }]);
+    buttons.push([{ text: '🔔 Notify Me On Restock', callback_data: `notif_sub:${pl.id}:${returnPage}` }]);
   }
 
   buttons.push([
-    { text: '🔄 Refresh', callback_data: `view_plan:${pl.id}:${returnPage}` },
-    { text: '◀️ Back to Plans', callback_data: `view_prod:${pl.product_id}:${returnPage}` }
+    { text: '👈 Back', callback_data: `view_prod:${pl.product_id}:${returnPage}` },
+    { text: '🏠 Home', callback_data: 'main_home' }
   ]);
 
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
 
-// ============================================================================
-// 7. ORDER PREPARATION & PURCHASE LOGIC (CONCURRENCY SAFE)
-// ============================================================================
 async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId) {
   const db = getPool();
   const [plans] = await db.query(
@@ -601,8 +569,8 @@ async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId
   );
 
   if (plans.length === 0 || plans[0].stock_count <= 0) {
-    await editMessageText(chatId, messageId, '❌ Sorry, this item just sold out or is no longer available.', {
-      inline_keyboard: [[{ text: '◀️ Back', callback_data: `view_prod:${plans[0]?.product_id || 1}:${returnPage}` }]]
+    await editMessageText(chatId, messageId, '❌ Sorry, this item is sold out or unavailable.', {
+      inline_keyboard: [[{ text: '👈 Back', callback_data: `view_prod:${plans[0]?.product_id || 1}:${returnPage}` }]]
     });
     return;
   }
@@ -626,7 +594,7 @@ async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId
     { text: '🟡 Binance Pay', callback_data: `pay_manual:Binance:${pl.id}` },
     { text: '₮ USDT BEP20', callback_data: `pay_manual:USDT_BEP20:${pl.id}` }
   ]);
-  buttons.push([{ text: '◀️ Cancel & Back', callback_data: `view_plan:${pl.id}:${returnPage}` }]);
+  buttons.push([{ text: '👈 Cancel & Back', callback_data: `view_plan:${pl.id}:${returnPage}` }]);
 
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
@@ -639,7 +607,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
   try {
     await conn.beginTransaction();
 
-    // 1. Fetch user wallet with row lock
+    // 1. Lock wallet row
     const [wallets] = await conn.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [userId]);
     if (wallets.length === 0) {
       await conn.rollback();
@@ -647,7 +615,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     }
     const currentBalance = Number(wallets[0].balance);
 
-    // 2. Fetch plan details
+    // 2. Fetch plan
     const [plans] = await conn.query(
       `SELECT pl.*, p.name as product_name, p.emoji as product_emoji 
        FROM plans pl 
@@ -676,8 +644,8 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
         `Please top up your wallet balance first.`,
         {
           inline_keyboard: [
-            [{ text: '➕ Deposit to Wallet', callback_data: 'wallet_deposit' }],
-            [{ text: '◀️ Back to Catalog', callback_data: 'store_page:0' }]
+            [{ text: '➕ Top Up Wallet', callback_data: 'wallet_deposit' }],
+            [{ text: '👈 Back', callback_data: 'store_page:0' }]
           ]
         }
       );
@@ -697,7 +665,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
         chatId,
         messageId,
         '❌ <b>OUT OF STOCK</b>\n\nSorry, someone just purchased the last item in this plan!',
-        { inline_keyboard: [[{ text: '◀️ Back to Store', callback_data: 'store_page:0' }]] }
+        { inline_keyboard: [[{ text: '👈 Back to Store', callback_data: 'store_page:0' }]] }
       );
     }
 
@@ -707,7 +675,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     // 5. Deduct Wallet
     await conn.query('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [orderCost, userId]);
 
-    // 6. Create Completed Order
+    // 6. Create Delivered Order
     const [orderRes] = await conn.query(
       `INSERT INTO orders (user_id, plan_id, amount, payment_method, status, delivery_content)
        VALUES (?, ?, ?, 'WALLET', 'DELIVERED', ?)`,
@@ -715,13 +683,13 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
     );
     const orderId = orderRes.insertId;
 
-    // 7. Update Inventory Status to SOLD
+    // 7. Update Inventory Status
     await conn.query(
       `UPDATE inventory SET status = 'SOLD', order_id = ? WHERE id = ?`,
       [orderId, selectedInv.id]
     );
 
-    // 8. Record Wallet Transaction
+    // 8. Record Transaction
     await conn.query(
       `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, reference_id, description)
        VALUES (?, 'PURCHASE', ?, ?, ?, ?)`,
@@ -730,7 +698,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
 
     await conn.commit();
 
-    // 9. Deliver to customer
+    // 9. Deliver Credentials
     const successMsg =
       `🎉 <b>ORDER COMPLETED & DELIVERED!</b>\n\n` +
       `Order: <b>#ORD${orderId}</b>\n` +
@@ -749,7 +717,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       ]
     });
 
-    // Notify Admin of completed purchase
+    // Notify Admin
     sendMessage(
       ADMIN_ID,
       `🛍 <b>NEW STORE PURCHASE</b>\n\n` +
@@ -769,7 +737,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
 }
 
 // ============================================================================
-// 8. MANUAL PAYMENT FLOW (ORDERS & DEPOSITS)
+// 9. MANUAL ORDER PAYMENT
 // ============================================================================
 async function initiateManualOrderPayment(chatId, messageId, method, planId, userId) {
   const db = getPool();
@@ -785,7 +753,6 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
   }
   const pl = plans[0];
 
-  // Create PENDING_PAYMENT order
   const [res] = await db.query(
     `INSERT INTO orders (user_id, plan_id, amount, payment_method, status)
      VALUES (?, ?, ?, ?, 'PENDING_PAYMENT')`,
@@ -796,13 +763,13 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
   let payInfo = '';
   if (method === 'Binance') {
     payInfo =
-      `🟡 <b>BINANCE PAY INSTRUCTIONS</b>\n\n` +
+      `🟡 <b>BINANCE PAY INSTRUCTIONS:</b>\n\n` +
       `Binance Pay ID: <code>${BINANCE_ID}</code>\n` +
       `Recipient: <b>${STORE_NAME}</b>\n` +
       `Exact Amount: <b>$${Number(pl.price).toFixed(2)} USD</b>`;
   } else {
     payInfo =
-      `₮ <b>USDT BEP20 (BNB Smart Chain) INSTRUCTIONS</b>\n\n` +
+      `₮ <b>USDT BEP20 (BNB Smart Chain) INSTRUCTIONS:</b>\n\n` +
       `Address: <code>${USDT_BEP20_ADDRESS}</code>\n` +
       `Network: <b>BEP20 (BSC)</b>\n` +
       `Exact Amount: <b>$${Number(pl.price).toFixed(2)} USDT</b>`;
@@ -827,7 +794,7 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
 }
 
 // ============================================================================
-// 9. WALLET MANAGEMENT & DEPOSIT WORKFLOW
+// 10. WALLET & DEPOSIT SYSTEM
 // ============================================================================
 async function renderWalletMenu(chatId, messageId, userId) {
   const balance = await getWalletBalance(userId);
@@ -836,12 +803,12 @@ async function renderWalletMenu(chatId, messageId, userId) {
     `💰 <b>MY WALLET</b>\n\n` +
     `Account Holder: <a href="tg://user?id=${userId}">${userId}</a>\n` +
     `Available Balance: <b>$${balance} USD</b>\n\n` +
-    `Use your balance for instant, 1-click purchases on all catalog products.`;
+    `Use your balance for instant, 1-click purchases on all catalog items.`;
 
   const keyboard = {
     inline_keyboard: [
-      [{ text: '➕ Deposit Funds', callback_data: 'wallet_deposit' }, { text: '📊 History', callback_data: 'wallet_history:0' }],
-      [{ text: '🔄 Refresh Balance', callback_data: 'wallet_main' }, { text: '🏠 Home', callback_data: 'main_home' }]
+      [{ text: '➕ Top Up Balance', callback_data: 'wallet_deposit' }, { text: '📊 History', callback_data: 'wallet_history:0' }],
+      [{ text: '🔄 Refresh', callback_data: 'wallet_main' }, { text: '🏠 Home', callback_data: 'main_home' }]
     ]
   };
 
@@ -889,31 +856,29 @@ async function renderWalletHistory(chatId, messageId, userId, page = 0) {
 
   const keyboard = [];
   if (nav.length > 0) keyboard.push(nav);
-  keyboard.push([{ text: '◀️ Back to Wallet', callback_data: 'wallet_main' }]);
+  keyboard.push([{ text: '👈 Back to Wallet', callback_data: 'wallet_main' }]);
 
   await editMessageText(chatId, messageId, msg, { inline_keyboard: keyboard });
 }
 
-// Deposit Step 1: Select Method
 async function renderDepositMethodSelection(chatId, messageId) {
   const text =
-    `💰 <b>WALLET DEPOSIT</b>\n\n` +
+    `💰 <b>DEPOSIT FUNDS</b>\n\n` +
     `Select your deposit payment method:\n` +
-    `• Binance Pay (Zero fee internal transfer)\n` +
+    `• Binance Pay (Zero fee transfer)\n` +
     `• USDT BEP20 (Binance Smart Chain)`;
 
   const keyboard = {
     inline_keyboard: [
       [{ text: '🟡 Binance Pay', callback_data: 'dep_method:Binance' }],
       [{ text: '₮ USDT BEP20', callback_data: 'dep_method:USDT_BEP20' }],
-      [{ text: '◀️ Back to Wallet', callback_data: 'wallet_main' }]
+      [{ text: '👈 Back to Wallet', callback_data: 'wallet_main' }]
     ]
   };
   await editMessageText(chatId, messageId, text, keyboard);
 }
 
-// Approve Deposit Atomically
-async function approveDeposit(depositId, adminId, queryId = null) {
+async function approveDeposit(depositId, adminId) {
   const pool = getPool();
   const conn = await pool.getConnection();
 
@@ -931,35 +896,26 @@ async function approveDeposit(depositId, adminId, queryId = null) {
       return { success: false, message: `Deposit already ${dep.status}.` };
     }
 
-    // 1. Credit wallet
     await conn.query('UPDATE wallets SET balance = balance + ? WHERE user_id = ?', [dep.amount, dep.user_id]);
 
-    // 2. Fetch updated balance
     const [w] = await conn.query('SELECT balance FROM wallets WHERE user_id = ?', [dep.user_id]);
     const newBal = Number(w[0].balance).toFixed(2);
 
-    // 3. Mark deposit APPROVED
-    await conn.query(
-      `UPDATE deposits SET status = 'APPROVED', admin_id = ? WHERE id = ?`,
-      [adminId, depositId]
-    );
+    await conn.query(`UPDATE deposits SET status = 'APPROVED', admin_id = ? WHERE id = ?`, [adminId, depositId]);
 
-    // 4. Record wallet transaction
     await conn.query(
       `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, reference_id, description)
        VALUES (?, 'DEPOSIT', ?, ?, ?, ?)`,
       [dep.user_id, dep.amount, newBal, `DEP#${depositId}`, `Wallet Deposit (${dep.payment_method})`]
     );
 
-    // 5. Admin Log
     await conn.query(
       'INSERT INTO admin_logs (admin_id, action, details) VALUES (?, ?, ?)',
-      [adminId, 'DEPOSIT_APPROVED', `Deposit #${depositId} for user ${dep.user_id}, amount $${dep.amount}`]
+      [adminId, 'DEPOSIT_APPROVED', `Deposit #${depositId} approved for user ${dep.user_id}, $${dep.amount}`]
     );
 
     await conn.commit();
 
-    // 6. Notify user
     sendMessage(
       dep.user_id,
       `✅ <b>DEPOSIT APPROVED!</b>\n\n` +
@@ -967,17 +923,15 @@ async function approveDeposit(depositId, adminId, queryId = null) {
       `💰 Current Wallet Balance: <b>$${newBal} USD</b>`
     );
 
-    return { success: true, message: `Deposit #${depositId} approved and $${dep.amount} credited.` };
+    return { success: true, message: `Deposit #${depositId} approved and credited.` };
   } catch (err) {
     await conn.rollback();
-    console.error('Approve deposit error:', err);
     return { success: false, message: err.message };
   } finally {
     conn.release();
   }
 }
 
-// Reject Deposit
 async function rejectDeposit(depositId, adminId, reason = 'Payment unverified') {
   const db = getPool();
   const [rows] = await db.query('SELECT * FROM deposits WHERE id = ?', [depositId]);
@@ -989,21 +943,21 @@ async function rejectDeposit(depositId, adminId, reason = 'Payment unverified') 
     [adminId, reason, depositId]
   );
 
-  await logAdminAction(adminId, 'DEPOSIT_REJECTED', `Deposit #${depositId} rejected. Reason: ${reason}`);
+  await logAdminAction(adminId, 'DEPOSIT_REJECTED', `Deposit #${depositId} rejected.`);
 
   sendMessage(
     rows[0].user_id,
     `❌ <b>DEPOSIT REJECTED</b>\n\n` +
     `Your deposit of <b>$${Number(rows[0].amount).toFixed(2)}</b> could not be verified.\n` +
     `Reason: ${reason}\n\n` +
-    `If you believe this is an error, please reach out to Support: @${SUPPORT_USERNAME}`
+    `If you believe this is an error, please contact Support: @${SUPPORT_USERNAME}`
   );
 
   return { success: true, message: `Deposit #${depositId} has been rejected.` };
 }
 
 // ============================================================================
-// 10. MANUAL ORDER PAYMENT APPROVAL & FULFILLMENT
+// 11. MANUAL ORDER APPROVAL
 // ============================================================================
 async function approveManualPayment(orderId, adminId) {
   const pool = getPool();
@@ -1023,7 +977,6 @@ async function approveManualPayment(orderId, adminId) {
       return { success: false, message: `Order status is ${ord.status}, expected PAYMENT_SUBMITTED.` };
     }
 
-    // Attempt automatic inventory assignment if available
     const [inv] = await conn.query(
       `SELECT id, content FROM inventory 
        WHERE plan_id = ? AND status = 'AVAILABLE' 
@@ -1037,7 +990,6 @@ async function approveManualPayment(orderId, adminId) {
       await conn.query('UPDATE inventory SET status = "SOLD", order_id = ? WHERE id = ?', [orderId, item.id]);
       await conn.commit();
 
-      // Notify customer with credentials
       sendMessage(
         ord.user_id,
         `✅ <b>PAYMENT APPROVED & ORDER DELIVERED!</b>\n\n` +
@@ -1046,9 +998,8 @@ async function approveManualPayment(orderId, adminId) {
         `📦 <b>CREDENTIALS / ACCESS:</b>\n` +
         `<code>${item.content}</code>`
       );
-      return { success: true, message: `Order #${orderId} approved and fulfilled instantly from stock.` };
+      return { success: true, message: `Order #${orderId} approved and fulfilled instantly.` };
     } else {
-      // Mark as PAID / Processing (Requires manual delivery)
       await conn.query('UPDATE orders SET status = "PAID" WHERE id = ?', [orderId]);
       await conn.commit();
 
@@ -1056,10 +1007,9 @@ async function approveManualPayment(orderId, adminId) {
         ord.user_id,
         `✅ <b>PAYMENT APPROVED!</b>\n\n` +
         `Order: <b>#ORD${orderId}</b>\n` +
-        `Your payment has been confirmed. The administrator is preparing your custom credentials.\n` +
-        `You will receive them here shortly.`
+        `Your payment has been confirmed. The administrator will prepare and deliver your credentials shortly.`
       );
-      return { success: true, message: `Payment approved for #ORD${orderId}. Inventory empty — manual fulfillment needed.` };
+      return { success: true, message: `Payment approved for #ORD${orderId}. Manual fulfillment required.` };
     }
   } catch (err) {
     await conn.rollback();
@@ -1069,15 +1019,13 @@ async function approveManualPayment(orderId, adminId) {
   }
 }
 
-// Reject Manual Order Payment
 async function rejectManualPayment(orderId, adminId, reason = 'Unverified transaction') {
   const db = getPool();
   const [orders] = await db.query('SELECT * FROM orders WHERE id = ?', [orderId]);
   if (orders.length === 0) return { success: false, message: 'Order not found.' };
-  if (orders[0].status !== 'PAYMENT_SUBMITTED') return { success: false, message: 'Order not under review.' };
 
   await db.query('UPDATE orders SET status = "PAYMENT_REJECTED", admin_note = ? WHERE id = ?', [reason, orderId]);
-  await logAdminAction(adminId, 'PAYMENT_REJECTED', `Order #${orderId} rejected. Reason: ${reason}`);
+  await logAdminAction(adminId, 'PAYMENT_REJECTED', `Order #${orderId} rejected.`);
 
   sendMessage(
     orders[0].user_id,
@@ -1090,7 +1038,52 @@ async function rejectManualPayment(orderId, adminId, reason = 'Unverified transa
 }
 
 // ============================================================================
-// 11. ADMIN DASHBOARD & MANAGEMENT FUNCTIONS
+// 12. AUTOMATIC RESTOCK BROADCAST TO ALL USERS
+// ============================================================================
+async function broadcastRestockToAllUsers(planId, addedCount) {
+  const db = getPool();
+  const [plans] = await db.query(
+    `SELECT pl.*, p.name as product_name, p.emoji as product_emoji 
+     FROM plans pl 
+     JOIN products p ON pl.product_id = p.id 
+     WHERE pl.id = ?`,
+    [planId]
+  );
+  if (plans.length === 0) return;
+  const pl = plans[0];
+
+  const [users] = await db.query('SELECT id FROM users WHERE is_banned = 0');
+
+  const alertMsg =
+    `🔥 <b>STOCK ADDED! NEW PACKAGES AVAILABLE</b>\n\n` +
+    `<b>${pl.product_emoji} ${pl.product_name}</b>\n` +
+    `Plan: <b>${pl.name}</b>\n` +
+    `💵 Price: <b>$${Number(pl.price).toFixed(2)} USD</b>\n` +
+    `⏱️ Duration: <b>${pl.duration_text}</b>\n` +
+    `🛡️ Warranty: <b>${pl.warranty_text}</b>\n` +
+    `📦 Newly Added Stock: <b>+${addedCount}</b>\n\n` +
+    `<i>Grab yours before it sells out again!</i>`;
+
+  const buyKeyboard = {
+    inline_keyboard: [[{ text: '🛒 BUY NOW', callback_data: `view_plan:${pl.id}:0` }]]
+  };
+
+  let sent = 0;
+  for (const u of users) {
+    try {
+      await sendMessage(u.id, alertMsg, buyKeyboard);
+      sent++;
+      await new Promise(r => setTimeout(r, 35)); // rate limit protection
+    } catch (e) {
+      // Ignored if user blocked bot
+    }
+  }
+
+  await sendMessage(ADMIN_ID, `📢 <b>AUTOMATIC RESTOCK BROADCAST COMPLETE</b>\nDelivered alert to <b>${sent}</b> users for ${pl.product_name} (${pl.name}).`);
+}
+
+// ============================================================================
+// 13. ADMIN DASHBOARD & PRODUCT CREATION
 // ============================================================================
 async function renderAdminDashboard(chatId, messageId = null) {
   const db = getPool();
@@ -1109,10 +1102,6 @@ async function renderAdminDashboard(chatId, messageId = null) {
   );
   const [totalPlans] = await db.query('SELECT COUNT(*) as count FROM plans WHERE is_active = 1');
 
-  const totalP = totalPlans[0].count;
-  const inStockP = availPlans[0].count;
-  const soldOutP = Math.max(0, totalP - inStockP);
-
   const text =
     `👑 <b>ISELL STORE — ADMIN DASHBOARD</b>\n\n` +
     `👥 <b>Total Users:</b> ${usersCount[0].count}\n` +
@@ -1121,8 +1110,7 @@ async function renderAdminDashboard(chatId, messageId = null) {
     `💳 <b>Pending Deposits:</b> ${pendingDeposits[0].count}\n` +
     `💰 <b>Total Revenue:</b> $${Number(revenueRow[0].total).toFixed(2)} USD\n` +
     `💵 <b>Wallet Liability:</b> $${Number(liabilityRow[0].total).toFixed(2)} USD\n` +
-    `🟢 <b>Available Plans:</b> ${inStockP}\n` +
-    `❌ <b>Sold Out Plans:</b> ${soldOutP}\n`;
+    `🟢 <b>In-Stock Plans:</b> ${availPlans[0].count} / ${totalPlans[0].count}\n`;
 
   const keyboard = getAdminPanelKeyboard();
 
@@ -1133,104 +1121,15 @@ async function renderAdminDashboard(chatId, messageId = null) {
   }
 }
 
-// RESTOCK NOTIFICATION TRIGGER
-async function handleRestockNotification(planId, adminId) {
-  const db = getPool();
-  const [plans] = await db.query(
-    `SELECT pl.*, p.name as product_name, p.emoji as product_emoji,
-      (SELECT COUNT(i.id) FROM inventory i WHERE i.plan_id = pl.id AND i.status = 'AVAILABLE') as stock_count
-     FROM plans pl 
-     JOIN products p ON pl.product_id = p.id 
-     WHERE pl.id = ?`,
-    [planId]
-  );
-  if (plans.length === 0) return;
-  const pl = plans[0];
-
-  const [subs] = await db.query(
-    'SELECT COUNT(*) as count FROM notification_subscriptions WHERE plan_id = ?',
-    [planId]
-  );
-  const subCount = subs[0].count;
-
-  const msg =
-    `🔥 <b>BACK IN STOCK ALERT READY</b>\n\n` +
-    `Product: <b>${pl.product_emoji} ${pl.product_name}</b>\n` +
-    `Plan: <b>${pl.name}</b>\n` +
-    `Price: <b>$${Number(pl.price).toFixed(2)}</b>\n` +
-    `Current Stock: <b>${pl.stock_count}</b>\n\n` +
-    `Subscribed Interested Users: <b>${subCount}</b>`;
-
-  const buttons = [
-    [{ text: `📢 Notify Interested Users (${subCount})`, callback_data: `admin_dispatch_notif:${planId}:SUBS` }],
-    [{ text: '📢 Broadcast to ALL Users', callback_data: `admin_dispatch_notif:${planId}:ALL` }],
-    [{ text: '❌ Dismiss', callback_data: 'admin_dashboard' }]
-  ];
-
-  await sendMessage(ADMIN_ID, msg, { inline_keyboard: buttons });
-}
-
-// Dispatch restock alerts
-async function dispatchRestockNotification(planId, targetType, adminId) {
-  const db = getPool();
-  const [plans] = await db.query(
-    `SELECT pl.*, p.name as product_name, p.emoji as product_emoji 
-     FROM plans pl 
-     JOIN products p ON pl.product_id = p.id 
-     WHERE pl.id = ?`,
-    [planId]
-  );
-  if (plans.length === 0) return;
-  const pl = plans[0];
-
-  let targetUsers = [];
-  if (targetType === 'SUBS') {
-    const [rows] = await db.query('SELECT user_id FROM notification_subscriptions WHERE plan_id = ?', [planId]);
-    targetUsers = rows.map(r => r.user_id);
-    // Cleanup subscriptions after notifying
-    await db.query('DELETE FROM notification_subscriptions WHERE plan_id = ?', [planId]);
-  } else {
-    const [rows] = await db.query('SELECT id as user_id FROM users WHERE is_banned = 0');
-    targetUsers = rows.map(r => r.user_id);
-  }
-
-  const alertMsg =
-    `🔥 <b>BACK IN STOCK!</b>\n\n` +
-    `<b>${pl.product_emoji} ${pl.product_name}</b> — <b>${pl.name}</b>\n` +
-    `💵 Price: <b>$${Number(pl.price).toFixed(2)} USD</b>\n` +
-    `⏱️ Duration: <b>${pl.duration_text}</b>\n` +
-    `🛡️ Warranty: <b>${pl.warranty_text}</b>\n\n` +
-    `Stock has just been added! Click below to buy before it sells out again.`;
-
-  const buyKeyboard = {
-    inline_keyboard: [[{ text: '🛒 BUY NOW', callback_data: `view_plan:${pl.id}:0` }]]
-  };
-
-  let sent = 0;
-  for (const uid of targetUsers) {
-    try {
-      await sendMessage(uid, alertMsg, buyKeyboard);
-      sent++;
-      // Brief pause to respect Telegram rate limits
-      await new Promise(r => setTimeout(r, 40));
-    } catch (e) {
-      // Ignored if user blocked bot
-    }
-  }
-
-  await logAdminAction(adminId, 'RESTOCK_BROADCAST', `Plan #${planId} restock broadcast sent to ${sent} users.`);
-  await sendMessage(ADMIN_ID, `✅ Restock notification delivered to ${sent} users.`);
-}
-
 // ============================================================================
-// 12. TEXT & PHOTO UPDATE DISPATCHER (FSM INPUT HANDLING)
+// 14. TEXT & PHOTO INPUT HANDLERS (FSM)
 // ============================================================================
 async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   const { state, data } = await getUserState(userId);
   if (!state) return false;
 
   // --------------------------------------------------------------------------
-  // Customer FSM: Deposit Flow
+  // Customer FSM: Deposit
   // --------------------------------------------------------------------------
   if (state === 'DEPOSIT_AMOUNT') {
     const amount = parseFloat(text.replace('$', '').trim());
@@ -1274,11 +1173,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       `━━━━━━━━━━━━━━━━━━\n` +
       `<b>VERIFICATION INSTRUCTIONS:</b>\n` +
       `Please make the payment now, then reply here with your <b>Transaction Hash / ID</b> or send a <b>Payment Screenshot</b>.`,
-      {
-        inline_keyboard: [
-          [{ text: '❌ Cancel Deposit', callback_data: `dep_cancel:${depositId}` }]
-        ]
-      }
+      { inline_keyboard: [[{ text: '❌ Cancel Deposit', callback_data: `dep_cancel:${depositId}` }]] }
     );
     return true;
   }
@@ -1305,7 +1200,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       { inline_keyboard: [[{ text: '💰 View Wallet', callback_data: 'wallet_main' }]] }
     );
 
-    // Notify Admin
     const adminNotice =
       `━━━━━━━━━━━━━━━━━━\n` +
       `💰 <b>NEW WALLET DEPOSIT</b>\n` +
@@ -1354,11 +1248,10 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     await sendMessage(
       chatId,
       `✅ <b>PAYMENT SUBMITTED FOR ORDER #ORD${orderId}</b>\n\n` +
-      `Our administration team is verifying your payment. Your digital credentials will be sent here upon confirmation.`,
+      `Our administration team is verifying your payment. Your digital credentials will be delivered here upon confirmation.`,
       { inline_keyboard: [[{ text: '📦 View Order', callback_data: `view_order:${orderId}` }]] }
     );
 
-    // Notify Admin
     const [ord] = await db.query(
       `SELECT o.*, pl.name as plan_name, p.name as product_name 
        FROM orders o 
@@ -1400,7 +1293,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   }
 
   // --------------------------------------------------------------------------
-  // Customer: Search Input
+  // Customer FSM: Product Search
   // --------------------------------------------------------------------------
   if (state === 'STORE_SEARCH_INPUT') {
     const db = getPool();
@@ -1420,54 +1313,88 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       await sendMessage(
         chatId,
         `❌ No products found matching "<b>${text}</b>".`,
-        { inline_keyboard: [[{ text: '🔎 Try Another Search', callback_data: 'store_search' }, { text: '🛍 Store', callback_data: 'store_page:0' }]] }
+        { inline_keyboard: [[{ text: '🔎 Try Another Search', callback_data: 'store_search' }, { text: '👈 Back', callback_data: 'store_page:0' }]] }
       );
       return true;
     }
 
     const buttons = [];
     for (const r of results) {
-      const inStock = r.stock_count > 0;
       buttons.push([{
-        text: `${inStock ? '🟢' : '❌'} ${r.emoji} ${r.name}`,
+        text: `${r.emoji} ${r.name}`,
         callback_data: `view_prod:${r.id}:0`
       }]);
     }
-    buttons.push([{ text: '◀️ Back to Catalog', callback_data: 'store_page:0' }]);
+    buttons.push([{ text: '👈 Back to Categories', callback_data: 'store_page:0' }]);
 
     await sendMessage(chatId, `🔎 <b>SEARCH RESULTS FOR "${text}":</b>`, { inline_keyboard: buttons });
     return true;
   }
 
   // --------------------------------------------------------------------------
-  // Admin FSM: Add Plan Steps
+  // Admin FSM: Add Product Flow
   // --------------------------------------------------------------------------
   if (userId === ADMIN_ID) {
+    if (state === 'ADM_ADD_PROD_NAME') {
+      await setUserState(userId, 'ADM_ADD_PROD_EMOJI', { name: text.trim() });
+      await sendMessage(chatId, `Enter an emoji for <b>${text.trim()}</b> (e.g. 🤖, 🎨, 🎵, 🎬):`);
+      return true;
+    }
+
+    if (state === 'ADM_ADD_PROD_EMOJI') {
+      const db = getPool();
+      const emoji = text.trim() || '📦';
+      const [res] = await db.query(
+        `INSERT INTO products (name, emoji, is_active) VALUES (?, ?, 1)`,
+        [data.name, emoji]
+      );
+      await clearUserState(userId);
+
+      await sendMessage(
+        chatId,
+        `✅ <b>Product Created: ${emoji} ${data.name}</b>\n\nNow you can add subscription plans and stock to it!`,
+        {
+          inline_keyboard: [
+            [{ text: '➕ Add Plan to this Product', callback_data: `adm_plan_add_start:${res.insertId}` }],
+            [{ text: '◀️ Admin Panel', callback_data: 'admin_dashboard' }]
+          ]
+        }
+      );
+      return true;
+    }
+
+    // --------------------------------------------------------------------------
+    // Admin FSM: Add Plan Flow
+    // --------------------------------------------------------------------------
     if (state === 'ADM_ADD_PLAN_NAME') {
       await setUserState(userId, 'ADM_ADD_PLAN_DETAILS', { ...data, name: text.trim() });
-      await sendMessage(chatId, '📝 <b>Step 2/6:</b> Enter the <b>Plan Details / Features</b> (supports multiline text):');
+      await sendMessage(chatId, '📝 <b>Step 2/5:</b> Enter the <b>Plan Details / Features</b> (supports multiline text):');
       return true;
     }
+
     if (state === 'ADM_ADD_PLAN_DETAILS') {
       await setUserState(userId, 'ADM_ADD_PLAN_PRICE', { ...data, details: text.trim() });
-      await sendMessage(chatId, '💵 <b>Step 3/6:</b> Enter the <b>Price in USD</b> (e.g. 15.00):');
+      await sendMessage(chatId, '💵 <b>Step 3/5:</b> Enter the <b>Price in USD</b> (e.g. 15.50):');
       return true;
     }
+
     if (state === 'ADM_ADD_PLAN_PRICE') {
       const price = parseFloat(text.replace('$', '').trim());
       if (isNaN(price) || price < 0) {
-        await sendMessage(chatId, '❌ Invalid price. Enter a valid number (e.g. 15.00):');
+        await sendMessage(chatId, '❌ Invalid price. Enter a valid number (e.g. 15.50):');
         return true;
       }
       await setUserState(userId, 'ADM_ADD_PLAN_DURATION', { ...data, price });
-      await sendMessage(chatId, '⏱️ <b>Step 4/6:</b> Enter the <b>Duration Text</b> (e.g. 30 Days, 1 Month, Lifetime):');
+      await sendMessage(chatId, '⏱️ <b>Step 4/5:</b> Enter the <b>Duration Text</b> (e.g. 30 Days, 1 Month, 2 Years, Lifetime):');
       return true;
     }
+
     if (state === 'ADM_ADD_PLAN_DURATION') {
       await setUserState(userId, 'ADM_ADD_PLAN_WARRANTY', { ...data, duration_text: text.trim() });
-      await sendMessage(chatId, '🛡️ <b>Step 5/6:</b> Enter the <b>Warranty Text</b> (e.g. 30 day warranty, 1 year warranty, Lifetime warranty):');
+      await sendMessage(chatId, '🛡️ <b>Step 5/5:</b> Enter the <b>Warranty Text</b> (e.g. Full Warranty, 30 day warranty, No Warranty):');
       return true;
     }
+
     if (state === 'ADM_ADD_PLAN_WARRANTY') {
       const finalData = { ...data, warranty_text: text.trim() };
       const db = getPool();
@@ -1479,7 +1406,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       );
 
       await clearUserState(userId);
-      await logAdminAction(adminIdSafe(userId), 'PLAN_CREATED', `Created plan #${res.insertId} (${finalData.name}) for product #${finalData.productId}`);
+      await logAdminAction(ADMIN_ID, 'PLAN_CREATED', `Created plan #${res.insertId} (${finalData.name})`);
 
       await sendMessage(
         chatId,
@@ -1489,7 +1416,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
         `Price: $${finalData.price.toFixed(2)}\n` +
         `Duration: ${finalData.duration_text}\n` +
         `Warranty: ${finalData.warranty_text}\n\n` +
-        `<i>Note: Plan currently has ZERO stock. Add inventory items to make it available.</i>`,
+        `<i>Plan currently has ZERO stock. Add stock to make it available to customers.</i>`,
         {
           inline_keyboard: [
             [{ text: '➕ Add Stock to this Plan', callback_data: `adm_stock_add_prompt:${res.insertId}` }],
@@ -1501,7 +1428,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     }
 
     // --------------------------------------------------------------------------
-    // Admin FSM: Add Inventory
+    // Admin FSM: Add Inventory Stock & Trigger Universal Broadcast
     // --------------------------------------------------------------------------
     if (state === 'ADM_ADD_STOCK_ITEMS') {
       const planId = data.planId;
@@ -1523,17 +1450,17 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       }
 
       await clearUserState(userId);
-      await logAdminAction(adminIdSafe(userId), 'STOCK_ADDED', `Added ${added} items to plan #${planId}`);
+      await logAdminAction(ADMIN_ID, 'STOCK_ADDED', `Added ${added} items to plan #${planId}`);
 
       await sendMessage(chatId, `✅ Successfully added <b>${added}</b> inventory items to Plan #${planId}!`);
 
-      // Trigger Restock Notification check
-      await handleRestockNotification(planId, userId);
+      // Automatically broadcast stock alert to all users
+      await broadcastRestockToAllUsers(planId, added);
       return true;
     }
 
     // --------------------------------------------------------------------------
-    // Admin FSM: Manual Fulfillment
+    // Admin FSM: Manual Order Fulfillment
     // --------------------------------------------------------------------------
     if (state === 'ADM_FULFILL_INPUT') {
       const orderId = data.orderId;
@@ -1557,13 +1484,13 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
         );
       }
 
-      await logAdminAction(adminIdSafe(userId), 'ORDER_FULFILLED', `Order #${orderId} fulfilled manually.`);
+      await logAdminAction(ADMIN_ID, 'ORDER_FULFILLED', `Order #${orderId} fulfilled manually.`);
       await sendMessage(chatId, `✅ Order #ORD${orderId} fulfilled and delivered to customer.`);
       return true;
     }
 
     // --------------------------------------------------------------------------
-    // Admin FSM: Broadcast Message
+    // Admin FSM: Manual Broadcast Message
     // --------------------------------------------------------------------------
     if (state === 'ADM_BROADCAST_TEXT') {
       const db = getPool();
@@ -1592,12 +1519,8 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   return false;
 }
 
-function adminIdSafe(id) {
-  return Number(id);
-}
-
 // ============================================================================
-// 13. USER PROFILE & MY ORDERS
+// 15. USER PROFILE & MY ORDERS
 // ============================================================================
 async function renderUserProfile(chatId, messageId, user) {
   const db = getPool();
@@ -1608,7 +1531,7 @@ async function renderUserProfile(chatId, messageId, user) {
 
   const text =
     `👤 <b>MY PROFILE</b>\n\n` +
-    `Name: <b>${user.first_name || 'Valued Customer'}</b>\n` +
+    `Name: <b>${user.first_name || 'Customer'}</b>\n` +
     `Username: ${user.username ? `@${user.username}` : '<i>Not set</i>'}\n` +
     `Telegram ID: <code>${user.id}</code>\n\n` +
     `💰 <b>Wallet Balance:</b> $${balance} USD\n` +
@@ -1674,7 +1597,6 @@ async function renderUserOrders(chatId, messageId, userId, page = 0) {
   await editMessageText(chatId, messageId, msg, { inline_keyboard: keyboard });
 }
 
-// Single order view
 async function renderSingleOrder(chatId, messageId, orderId, userId) {
   const db = getPool();
   const [orders] = await db.query(
@@ -1687,7 +1609,7 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
   );
 
   if (orders.length === 0) {
-    return editMessageText(chatId, messageId, '❌ Order not found or unauthorized.');
+    return editMessageText(chatId, messageId, '❌ Order not found.');
   }
 
   const o = orders[0];
@@ -1707,12 +1629,12 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
     msg += `<code>${o.delivery_content}</code>\n\n`;
   }
 
-  const buttons = [[{ text: '◀️ Back to Orders', callback_data: 'my_orders:0' }]];
+  const buttons = [[{ text: '👈 Back to Orders', callback_data: 'my_orders:0' }]];
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
 
 // ============================================================================
-// 14. CALLBACK QUERY ROUTER
+// 16. CALLBACK QUERY ROUTER
 // ============================================================================
 async function handleCallbackQuery(callbackQuery) {
   const queryId = callbackQuery.id;
@@ -1725,18 +1647,12 @@ async function handleCallbackQuery(callbackQuery) {
 
   await syncUser(fromUser);
 
-  // --------------------------------------------------------------------------
-  // ADMIN SECURITY BARRIER
-  // --------------------------------------------------------------------------
-  if (data.startsWith('admin_') || data.startsWith('adm_')) {
-    if (userId !== ADMIN_ID) {
-      return await answerCallbackQuery(queryId, '🚫 Unauthorized: Admin access only.', true);
-    }
+  // Admin access guard
+  if ((data.startsWith('admin_') || data.startsWith('adm_')) && userId !== ADMIN_ID) {
+    return await answerCallbackQuery(queryId, '🚫 Unauthorized: Admin access only.', true);
   }
 
-  // --------------------------------------------------------------------------
-  // Customer: Home & Navigation
-  // --------------------------------------------------------------------------
+  // Home
   if (data === 'main_home') {
     await clearUserState(userId);
     await answerCallbackQuery(queryId);
@@ -1744,11 +1660,11 @@ async function handleCallbackQuery(callbackQuery) {
       return await editMessageText(
         chatId,
         messageId,
-        `👑 <b>Welcome Admin</b>\n\nISell Store Administration & Management`,
+        `👑 <b>Welcome Admin</b>\n\n${STORE_NAME} Administration Panel`,
         {
           inline_keyboard: [
             [{ text: '⚙️ Admin Panel', callback_data: 'admin_dashboard' }],
-            [{ text: '🛍 Open Store', callback_data: 'store_page:0' }]
+            [{ text: '📁 Browse Store', callback_data: 'store_page:0' }]
           ]
         }
       );
@@ -1756,12 +1672,12 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(
       chatId,
       messageId,
-      `🛍 <b>Welcome to ${STORE_NAME}</b>\n\nPremium digital products, AI subscriptions, and software licenses with instant delivery and warranty.`,
+      `🛍 <b>Welcome to ${STORE_NAME}</b>\n\nPremium digital tools, subscriptions, and accounts with instant delivery and guaranteed warranty.`,
       getCustomerMainMenuKeyboard(userId)
     );
   }
 
-  // Store pagination
+  // Store page
   if (data.startsWith('store_page:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     await answerCallbackQuery(queryId);
@@ -1844,7 +1760,7 @@ async function handleCallbackQuery(callbackQuery) {
         [userId, p[0].product_id, planId]
       );
     }
-    await answerCallbackQuery(queryId, '🔔 Subscribed! You will be notified the moment this plan restocks.', true);
+    await answerCallbackQuery(queryId, '🔔 Subscribed! You will be alerted as soon as stock is added.', true);
     return;
   }
 
@@ -1876,8 +1792,8 @@ async function handleCallbackQuery(callbackQuery) {
       chatId,
       messageId,
       `💵 <b>ENTER DEPOSIT AMOUNT (${method})</b>\n\n` +
-      `Please reply with the exact amount in USD you want to deposit into your wallet (e.g. <code>10.00</code>):`,
-      { inline_keyboard: [[{ text: '◀️ Cancel', callback_data: 'wallet_main' }]] }
+      `Please reply with the exact amount in USD you want to deposit (e.g. <code>10.00</code>):`,
+      { inline_keyboard: [[{ text: '👈 Cancel', callback_data: 'wallet_main' }]] }
     );
   }
 
@@ -1919,8 +1835,8 @@ async function handleCallbackQuery(callbackQuery) {
       chatId,
       messageId,
       `🔎 <b>SEARCH PRODUCTS</b>\n\n` +
-      `Type the name of the service or product you are looking for (e.g. <code>ChatGPT</code>, <code>Netflix</code>, <code>Claude</code>):`,
-      { inline_keyboard: [[{ text: '◀️ Back to Store', callback_data: 'store_page:0' }]] }
+      `Type the name of the service or product you are looking for (e.g. <code>ChatGPT</code>, <code>Netflix</code>):`,
+      { inline_keyboard: [[{ text: '👈 Back', callback_data: 'store_page:0' }]] }
     );
   }
 
@@ -1931,10 +1847,10 @@ async function handleCallbackQuery(callbackQuery) {
       chatId,
       messageId,
       `📞 <b>CUSTOMER SUPPORT</b>\n\n` +
-      `For help with orders, custom subscriptions, or deposit issues, message our official support:\n\n` +
+      `For help with orders, activation, or deposits, message our official support:\n\n` +
       `👤 Support Agent: <b>@${SUPPORT_USERNAME}</b>\n` +
       `⚡ Response Time: Usually under 15 minutes.`,
-      { inline_keyboard: [[{ text: '◀️ Back to Store', callback_data: 'store_page:0' }]] }
+      { inline_keyboard: [[{ text: '👈 Back', callback_data: 'store_page:0' }]] }
     );
   }
 
@@ -1945,37 +1861,130 @@ async function handleCallbackQuery(callbackQuery) {
       chatId,
       messageId,
       `ℹ️ <b>STORE HELP & FAQ</b>\n\n` +
-      `• <b>How do I buy?</b> Deposit funds to your wallet for instant 1-click purchases, or choose manual payment.\n` +
+      `• <b>How do I buy?</b> Top up your wallet for instant 1-click purchases, or choose manual payment.\n` +
       `• <b>Where are my credentials?</b> Delivered immediately in chat and permanently accessible in 'My Orders'.\n` +
-      `• <b>Is warranty included?</b> Every product comes with its explicitly listed warranty duration.`,
-      { inline_keyboard: [[{ text: '◀️ Back', callback_data: 'store_page:0' }]] }
-    );
-  }
-
-  // Notification center
-  if (data === 'notifs_view') {
-    await answerCallbackQuery(queryId);
-    return await editMessageText(
-      chatId,
-      messageId,
-      `🔔 <b>NOTIFICATION CENTER</b>\n\n` +
-      `You are all caught up! When you subscribe to out-of-stock products, alerts will appear here.`,
-      { inline_keyboard: [[{ text: '◀️ Back', callback_data: 'store_page:0' }]] }
+      `• <b>Is warranty included?</b> Every product includes its specified replacement warranty.`,
+      { inline_keyboard: [[{ text: '👈 Back', callback_data: 'store_page:0' }]] }
     );
   }
 
   // --------------------------------------------------------------------------
-  // ADMIN PANEL ACTIONS (Authorized)
+  // ADMIN PANEL
   // --------------------------------------------------------------------------
   if (data === 'admin_dashboard') {
     await answerCallbackQuery(queryId);
     return await renderAdminDashboard(chatId, messageId);
   }
 
+  // Admin: Add Product Start
+  if (data === 'adm_prod_add_start') {
+    await setUserState(userId, 'ADM_ADD_PROD_NAME');
+    await answerCallbackQuery(queryId);
+    return await editMessageText(
+      chatId,
+      messageId,
+      `➕ <b>CREATE NEW PRODUCT</b>\n\n` +
+      `Reply with the name of the product (e.g. <code>ChatGPT</code>, <code>Canva</code>, <code>Nord VPN</code>):`,
+      { inline_keyboard: [[{ text: '👈 Cancel', callback_data: 'admin_dashboard' }]] }
+    );
+  }
+
+  // Admin: Products List
+  if (data.startsWith('admin_products:')) {
+    const page = parseInt(data.split(':')[1], 10) || 0;
+    const db = getPool();
+    const [prods] = await db.query('SELECT * FROM products ORDER BY name ASC LIMIT 10 OFFSET ?', [page * 10]);
+
+    let text = `🛍 <b>ADMIN PRODUCT MANAGEMENT (Page ${page + 1})</b>\n\n`;
+    const buttons = [];
+    for (const p of prods) {
+      buttons.push([{ text: `${p.emoji} ${p.name}`, callback_data: `adm_prod_mgt:${p.id}` }]);
+    }
+    buttons.push([
+      { text: '➕ Add Product', callback_data: 'adm_prod_add_start' },
+      { text: '👈 Back', callback_data: 'admin_dashboard' }
+    ]);
+    await answerCallbackQuery(queryId);
+    return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
+  }
+
+  // Admin: Product Management Submenu
+  if (data.startsWith('adm_prod_mgt:')) {
+    const prodId = parseInt(data.split(':')[1], 10);
+    const db = getPool();
+    const [p] = await db.query('SELECT * FROM products WHERE id = ?', [prodId]);
+    if (p.length === 0) return;
+    const prod = p[0];
+
+    const [plans] = await db.query('SELECT * FROM plans WHERE product_id = ?', [prodId]);
+    let text = `<b>${prod.emoji} ${prod.name} Management</b>\n\nPlans (${plans.length}):\n`;
+    for (const pl of plans) {
+      text += `• ${pl.name} — $${Number(pl.price).toFixed(2)}\n`;
+    }
+
+    const buttons = [
+      [{ text: '➕ Add Plan to this Product', callback_data: `adm_plan_add_start:${prodId}` }],
+      [{ text: '👈 Back to Products', callback_data: 'admin_products:0' }]
+    ];
+    await answerCallbackQuery(queryId);
+    return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
+  }
+
+  // Admin: Start Add Plan Flow
+  if (data.startsWith('adm_plan_add_start:')) {
+    const prodId = parseInt(data.split(':')[1], 10);
+    await setUserState(userId, 'ADM_ADD_PLAN_NAME', { productId: prodId });
+    await answerCallbackQuery(queryId);
+    return await editMessageText(
+      chatId,
+      messageId,
+      `📝 <b>Step 1/5: Enter Plan Name</b>\n\n(e.g. <code>Plus 1M - FW</code>, <code>Pro 1 Year</code>):`
+    );
+  }
+
+  // Admin: Prompt Add Stock
+  if (data.startsWith('adm_stock_add_prompt:')) {
+    const planId = parseInt(data.split(':')[1], 10);
+    await setUserState(userId, 'ADM_ADD_STOCK_ITEMS', { planId });
+    await answerCallbackQuery(queryId);
+    return await sendMessage(
+      chatId,
+      `📦 <b>ADD STOCK TO PLAN #${planId}</b>\n\n` +
+      `Paste the credentials/accounts below.\n` +
+      `Each line represents <b>ONE</b> individual stock item:\n\n` +
+      `<code>email:pass\nemail2:pass2\nLICENSE-KEY-XXXX</code>\n\n` +
+      `<i>Note: Adding stock will automatically broadcast an alert to all registered users!</i>`
+    );
+  }
+
+  // Admin: Stock Overview
+  if (data.startsWith('admin_stock_list:')) {
+    const db = getPool();
+    const [plans] = await db.query(
+      `SELECT pl.id, pl.name, p.name as product_name, p.emoji as product_emoji,
+        (SELECT COUNT(*) FROM inventory i WHERE i.plan_id = pl.id AND i.status = 'AVAILABLE') as count
+       FROM plans pl
+       JOIN products p ON pl.product_id = p.id
+       ORDER BY p.name ASC LIMIT 15`
+    );
+
+    let text = `📦 <b>WAREHOUSE INVENTORY OVERVIEW</b>\n\n`;
+    const buttons = [];
+    for (const pl of plans) {
+      buttons.push([{
+        text: `${pl.product_emoji} ${pl.product_name} (${pl.name}): ${pl.count} In Stock`,
+        callback_data: `adm_stock_add_prompt:${pl.id}`
+      }]);
+    }
+    buttons.push([{ text: '👈 Admin Panel', callback_data: 'admin_dashboard' }]);
+    await answerCallbackQuery(queryId);
+    return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
+  }
+
   // Admin: Approve Deposit
   if (data.startsWith('adm_dep_appr:')) {
     const depId = parseInt(data.split(':')[1], 10);
-    const result = await approveDeposit(depId, userId, queryId);
+    const result = await approveDeposit(depId, userId);
     await answerCallbackQuery(queryId, result.message, true);
     return await renderAdminDashboard(chatId, messageId);
   }
@@ -2016,96 +2025,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin: Products List
-  if (data.startsWith('admin_products:')) {
-    const page = parseInt(data.split(':')[1], 10) || 0;
-    const db = getPool();
-    const [prods] = await db.query('SELECT * FROM products ORDER BY name ASC LIMIT 10 OFFSET ?', [page * 10]);
-
-    let text = `🛍 <b>ADMIN PRODUCT MANAGEMENT (Page ${page + 1})</b>\n\n`;
-    const buttons = [];
-    for (const p of prods) {
-      buttons.push([{ text: `${p.emoji} ${p.name}`, callback_data: `adm_prod_mgt:${p.id}` }]);
-    }
-    buttons.push([
-      { text: '◀️ Admin Panel', callback_data: 'admin_dashboard' }
-    ]);
-    await answerCallbackQuery(queryId);
-    return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
-  }
-
-  // Admin: Product Management Submenu
-  if (data.startsWith('adm_prod_mgt:')) {
-    const prodId = parseInt(data.split(':')[1], 10);
-    const db = getPool();
-    const [p] = await db.query('SELECT * FROM products WHERE id = ?', [prodId]);
-    if (p.length === 0) return;
-    const prod = p[0];
-
-    const [plans] = await db.query('SELECT * FROM plans WHERE product_id = ?', [prodId]);
-    let text = `<b>${prod.emoji} ${prod.name} Management</b>\n\nPlans (${plans.length}):\n`;
-    for (const pl of plans) {
-      text += `• ${pl.name} — $${Number(pl.price).toFixed(2)}\n`;
-    }
-
-    const buttons = [
-      [{ text: '➕ Add Plan to this Product', callback_data: `adm_plan_add_start:${prodId}` }],
-      [{ text: '◀️ Back to Products', callback_data: 'admin_products:0' }]
-    ];
-    await answerCallbackQuery(queryId);
-    return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
-  }
-
-  // Admin: Start Add Plan Flow
-  if (data.startsWith('adm_plan_add_start:')) {
-    const prodId = parseInt(data.split(':')[1], 10);
-    await setUserState(userId, 'ADM_ADD_PLAN_NAME', { productId: prodId });
-    await answerCallbackQuery(queryId);
-    return await editMessageText(
-      chatId,
-      messageId,
-      `📝 <b>Step 1/6: Enter Plan Name</b>\n\n(e.g. <code>GPT TEAM 1M</code>, <code>1 Month Private</code>):`
-    );
-  }
-
-  // Admin: Prompt Add Stock
-  if (data.startsWith('adm_stock_add_prompt:')) {
-    const planId = parseInt(data.split(':')[1], 10);
-    await setUserState(userId, 'ADM_ADD_STOCK_ITEMS', { planId });
-    await answerCallbackQuery(queryId);
-    return await sendMessage(
-      chatId,
-      `📦 <b>ADD STOCK TO PLAN #${planId}</b>\n\n` +
-      `Paste the credentials/accounts below.\n` +
-      `Each line represents <b>ONE</b> individual stock item:\n\n` +
-      `<code>email:pass\nemail2:pass2\nLICENSE-KEY-XXXX</code>`
-    );
-  }
-
-  // Admin: Stock Overview
-  if (data.startsWith('admin_stock_list:')) {
-    const db = getPool();
-    const [plans] = await db.query(
-      `SELECT pl.id, pl.name, p.name as product_name, p.emoji as product_emoji,
-        (SELECT COUNT(*) FROM inventory i WHERE i.plan_id = pl.id AND i.status = 'AVAILABLE') as count
-       FROM plans pl
-       JOIN products p ON pl.product_id = p.id
-       ORDER BY p.name ASC LIMIT 15`
-    );
-
-    let text = `📦 <b>WAREHOUSE INVENTORY OVERVIEW</b>\n\n`;
-    const buttons = [];
-    for (const pl of plans) {
-      buttons.push([{
-        text: `${pl.product_emoji} ${pl.product_name} (${pl.name}): ${pl.count} In Stock`,
-        callback_data: `adm_stock_add_prompt:${pl.id}`
-      }]);
-    }
-    buttons.push([{ text: '◀️ Admin Panel', callback_data: 'admin_dashboard' }]);
-    await answerCallbackQuery(queryId);
-    return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
-  }
-
   // Admin: Broadcast prompt
   if (data === 'admin_broadcast_prompt') {
     await setUserState(userId, 'ADM_BROADCAST_TEXT');
@@ -2115,7 +2034,7 @@ async function handleCallbackQuery(callbackQuery) {
       messageId,
       `📢 <b>CREATE STORE BROADCAST</b>\n\n` +
       `Reply with the exact text or announcement you want to send to all users. (HTML supported):`,
-      { inline_keyboard: [[{ text: '◀️ Cancel', callback_data: 'admin_dashboard' }]] }
+      { inline_keyboard: [[{ text: '👈 Cancel', callback_data: 'admin_dashboard' }]] }
     );
   }
 
@@ -2144,15 +2063,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await sendMessage(ADMIN_ID, `✅ Broadcast delivered to <b>${sent}</b> users.`);
   }
 
-  // Admin: Dispatch Restock Notification
-  if (data.startsWith('admin_dispatch_notif:')) {
-    const [, planIdStr, targetType] = data.split(':');
-    const planId = parseInt(planIdStr, 10);
-    await answerCallbackQuery(queryId, 'Dispatching alerts...');
-    await dispatchRestockNotification(planId, targetType, userId);
-    return;
-  }
-
   // Admin: Logs View
   if (data.startsWith('admin_logs:')) {
     const db = getPool();
@@ -2163,7 +2073,7 @@ async function handleCallbackQuery(callbackQuery) {
     }
     await answerCallbackQuery(queryId);
     return await editMessageText(chatId, messageId, text, {
-      inline_keyboard: [[{ text: '◀️ Back', callback_data: 'admin_dashboard' }]]
+      inline_keyboard: [[{ text: '👈 Back', callback_data: 'admin_dashboard' }]]
     });
   }
 
@@ -2171,16 +2081,14 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 // ============================================================================
-// 15. MAIN VERCEL SERVERLESS WEBHOOK HANDLER
+// 17. MAIN VERCEL SERVERLESS HANDLER
 // ============================================================================
 export default async function handler(req, res) {
-  // Only accept POST requests from Telegram
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
     return res.status(405).json({ error: 'Method Not Allowed. Only Telegram POST webhooks accepted.' });
   }
 
-  // Optional Webhook Secret Verification
   if (WEBHOOK_SECRET) {
     const secretHeader = req.headers['x-telegram-bot-api-secret-token'];
     if (secretHeader !== WEBHOOK_SECRET) {
@@ -2226,21 +2134,17 @@ export default async function handler(req, res) {
 
       await syncUser(fromUser);
 
-      // Handle Photos/Screenshots (Payment Proof)
       let photoFileId = null;
       if (msg.photo && msg.photo.length > 0) {
-        photoFileId = msg.photo[msg.photo.length - 1].file_id; // highest resolution
+        photoFileId = msg.photo[msg.photo.length - 1].file_id;
       }
 
-      // Check for active FSM text / photo input
       const handled = await handleUserTextInput(chatId, userId, text, photoFileId);
       if (handled) {
         return res.status(200).json({ ok: true });
       }
 
-      // ----------------------------------------------------------------------
       // Commands
-      // ----------------------------------------------------------------------
       if (text.startsWith('/start')) {
         await clearUserState(userId);
         if (userId === ADMIN_ID) {
@@ -2250,7 +2154,7 @@ export default async function handler(req, res) {
             {
               inline_keyboard: [
                 [{ text: '⚙️ Admin Panel', callback_data: 'admin_dashboard' }],
-                [{ text: '🛍 Open Store', callback_data: 'store_page:0' }]
+                [{ text: '📁 Browse Store', callback_data: 'store_page:0' }]
               ]
             }
           );
@@ -2258,7 +2162,7 @@ export default async function handler(req, res) {
           await sendMessage(
             chatId,
             `🛍 <b>Welcome to ${STORE_NAME}</b>\n\n` +
-            `Your premier digital marketplace for AI tools, entertainment, productivity software, and subscription licenses.\n\n` +
+            `Your digital marketplace for AI tools, streaming, accounts, and licenses with instant delivery and guaranteed warranty.\n\n` +
             `Select an option below to get started:`,
             getCustomerMainMenuKeyboard(userId)
           );
