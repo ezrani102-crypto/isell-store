@@ -19,7 +19,7 @@ const DATABASE_URL = process.env.DATABASE_URL || '';
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 // ============================================================================
-// 2. DATABASE POOL (BULLETPROOF PARSING & SSL FOR TIDB CLOUD)
+// 2. DATABASE POOL (WITH AUTOMATIC RECONNECT & TLS FOR TIDB CLOUD)
 // ============================================================================
 let pool = null;
 
@@ -49,7 +49,6 @@ function getPool() {
       config.user = decodeURIComponent(url.username);
       config.password = decodeURIComponent(url.password);
       const dbName = url.pathname.replace(/^\//, '');
-      // If no database specified in URL, default to 'test' which is always present in TiDB
       config.database = dbName || 'test';
     } catch {
       config.uri = DATABASE_URL;
@@ -211,7 +210,7 @@ async function initDatabase() {
 }
 
 // ============================================================================
-// 3. TELEGRAM BOT API CALLS
+// 3. TELEGRAM BOT API UTILITIES (INCL. IN-MEMORY DOCUMENT SENDER)
 // ============================================================================
 async function callTelegram(method, payload = {}) {
   try {
@@ -256,6 +255,28 @@ async function sendPhoto(chatId, fileId, caption = '', replyMarkup = null) {
   const payload = { chat_id: chatId, photo: fileId, caption, parse_mode: 'HTML' };
   if (replyMarkup) payload.reply_markup = replyMarkup;
   return await callTelegram('sendPhoto', payload);
+}
+
+// Send Credentials as a .txt Document file (Memory-safe, no local disk needed)
+async function sendCredentialsFile(chatId, filename, textContent, caption = '') {
+  try {
+    const formData = new FormData();
+    formData.append('chat_id', String(chatId));
+    formData.append('caption', caption);
+    formData.append('parse_mode', 'HTML');
+
+    const fileBlob = new Blob([textContent], { type: 'text/plain' });
+    formData.append('document', fileBlob, filename);
+
+    const res = await fetch(`${TELEGRAM_API}/sendDocument`, {
+      method: 'POST',
+      body: formData
+    });
+    return await res.json();
+  } catch (err) {
+    console.error('sendCredentialsFile error:', err);
+    return { ok: false };
+  }
 }
 
 // ============================================================================
@@ -319,7 +340,7 @@ async function clearUserState(userId) {
 }
 
 // ============================================================================
-// 5. KEYBOARDS
+// 5. NAVIGATION KEYBOARDS
 // ============================================================================
 function getCustomerMainMenuKeyboard(userId) {
   const buttons = [
@@ -328,7 +349,7 @@ function getCustomerMainMenuKeyboard(userId) {
     [{ text: '👤 Profile', callback_data: 'user_profile' }, { text: '🔎 Search', callback_data: 'store_search' }],
     [{ text: '📞 Support', callback_data: 'store_support' }, { text: 'ℹ️ FAQ & Help', callback_data: 'store_help' }]
   ];
-  if (userId === ADMIN_ID) {
+  if (Number(userId) === ADMIN_ID) {
     buttons.push([{ text: '⚙️ Admin Panel', callback_data: 'admin_dashboard' }]);
   }
   return { inline_keyboard: buttons };
@@ -337,10 +358,10 @@ function getCustomerMainMenuKeyboard(userId) {
 function getAdminPanelKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: '📊 Dashboard', callback_data: 'admin_dashboard' }, { text: '🛍 Products & Plans', callback_data: 'admin_products:0' }],
-      [{ text: '➕ Add Product', callback_data: 'adm_prod_add_start' }, { text: '📦 Inventory Stock', callback_data: 'admin_stock_list:0' }],
+      [{ text: '📊 Dashboard Overview', callback_data: 'admin_dashboard' }, { text: '🛍 Products & Plans', callback_data: 'admin_products:0' }],
+      [{ text: '➕ Add Product', callback_data: 'adm_prod_add_start' }, { text: '📦 Stock Warehouse', callback_data: 'admin_stock_list:0' }],
       [{ text: '💳 Pending Payments', callback_data: 'admin_payments:0' }, { text: '💰 Pending Deposits', callback_data: 'admin_deposits:0' }],
-      [{ text: '📢 Manual Broadcast', callback_data: 'admin_broadcast_prompt' }, { text: '📝 Logs', callback_data: 'admin_logs:0' }],
+      [{ text: '📢 Send Broadcast', callback_data: 'admin_broadcast_prompt' }, { text: '📝 Admin Logs', callback_data: 'admin_logs:0' }],
       [{ text: '🛍 Open Customer View', callback_data: 'store_page:0' }],
       [{ text: '🏠 Home', callback_data: 'main_home' }]
     ]
@@ -348,7 +369,7 @@ function getAdminPanelKeyboard() {
 }
 
 // ============================================================================
-// 6. STORE CATALOG UI (SCREENSHOT 2: 2-COLUMN GRID)
+// 6. STORE CATALOG UI WITH VIBRANT COLOR INDICATION (🔵 IN STOCK | 🔴 SOLD OUT)
 // ============================================================================
 async function renderStorePage(chatId, messageId = null, page = 0) {
   const db = getPool();
@@ -378,11 +399,11 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     const emptyText =
       `📁 <b>Categories</b>\n\n` +
       `<i>No products have been added yet.</i>\n\n` +
-      (chatId === ADMIN_ID ? `👉 <b>Admin Tip:</b> Use the <b>Admin Panel</b> to create your first product!` : `Please check back shortly!`);
+      (Number(chatId) === ADMIN_ID ? `👉 <b>Admin Tip:</b> Use the <b>Admin Panel</b> to create your first product!` : `Please check back shortly!`);
 
     const emptyKeyboard = {
       inline_keyboard: [
-        chatId === ADMIN_ID ? [{ text: '➕ Add First Product', callback_data: 'adm_prod_add_start' }] : [],
+        Number(chatId) === ADMIN_ID ? [{ text: '➕ Add First Product', callback_data: 'adm_prod_add_start' }] : [],
         [{ text: '🏠 Home', callback_data: 'main_home' }]
       ].filter(r => r.length > 0)
     };
@@ -395,12 +416,15 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     return;
   }
 
+  // 2-Column Grid with explicit color signals
   const inlineGrid = [];
   let currentRow = [];
 
   for (const item of products) {
     const hasStock = item.stock_count > 0;
-    const label = hasStock ? `${item.emoji} ${item.name}` : `🔴 ${item.emoji} ${item.name}`;
+    // Blue for In-Stock; Red for Out of Stock
+    const statusDot = hasStock ? '🔵' : '🔴';
+    const label = `${statusDot} ${item.emoji} ${item.name} ${hasStock ? `(${item.stock_count})` : ''}`.trim();
 
     currentRow.push({
       text: label,
@@ -428,7 +452,12 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     { text: '🏠 Home', callback_data: 'main_home' }
   ]);
 
-  const text = `📁 <b>Categories</b>\n\n<i>Pick a category to browse.</i>`;
+  const text =
+    `📁 <b>Categories</b>\n\n` +
+    `<i>Pick a category to browse:</i>\n` +
+    `🔵 = <b>Available / In Stock</b>\n` +
+    `🔴 = <b>Unavailable / Out of Stock</b>`;
+
   const keyboard = { inline_keyboard: inlineGrid };
 
   if (messageId) {
@@ -439,7 +468,7 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
 }
 
 // ============================================================================
-// 7. PRODUCT PLANS UI (SCREENSHOT 3: STATUS HEADER & PLAN BUTTONS)
+// 7. PRODUCT PLANS UI (🟢 GREEN IN-STOCK | 🔴 RED SOLD-OUT)
 // ============================================================================
 async function renderProductPlans(chatId, messageId, productId, returnPage = 0) {
   const db = getPool();
@@ -471,7 +500,7 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
     msg += `<b>❝ Currently Sold Out ⏳ Check back soon! ❞</b>\n\n`;
   }
 
-  msg += `<i>${plans.length} options — tap one to see the details.</i>`;
+  msg += `<i>${plans.length} plan options available — tap one to view details:</i>`;
 
   const keyboard = [];
   if (plans.length === 0) {
@@ -480,10 +509,12 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
     for (const pl of plans) {
       const stock = pl.available_stock;
       if (stock > 0) {
-        const label = `${prod.emoji} ${pl.name} | $${Number(pl.price).toFixed(2)} | ${stock}`;
+        // Green indicator for active available stock
+        const label = `🟢 ${prod.emoji} ${pl.name} | $${Number(pl.price).toFixed(2)} | ${stock} Avail`;
         keyboard.push([{ text: label, callback_data: `view_plan:${pl.id}:${returnPage}` }]);
       } else {
-        const label = `❌ ${pl.name} | $${Number(pl.price).toFixed(2)} | Sold out`;
+        // Red indicator for sold out plans
+        const label = `🔴 ❌ ${pl.name} | $${Number(pl.price).toFixed(2)} | Sold out`;
         keyboard.push([{ text: label, callback_data: `view_plan:${pl.id}:${returnPage}` }]);
       }
     }
@@ -498,7 +529,7 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
 }
 
 // ============================================================================
-// 8. PLAN DETAILS & WALLET PURCHASE
+// 8. PLAN DETAILS & ATOMIC PURCHASE WITH DUAL TEXT + FILE DELIVERY
 // ============================================================================
 async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, userId = null) {
   const db = getPool();
@@ -586,6 +617,7 @@ async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
 
+// ATOMIC WALLET PURCHASE & DUAL DELIVERY (TEXT + ATTACHED FILE)
 async function executeWalletPurchase(chatId, messageId, planId, userId) {
   const pool = getPool();
   const conn = await pool.getConnection();
@@ -673,6 +705,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
 
     await conn.commit();
 
+    // 1. Text Delivery Format
     const successMsg =
       `🎉 <b>ORDER COMPLETED & DELIVERED!</b>\n\n` +
       `Order: <b>#ORD${orderId}</b>\n` +
@@ -680,9 +713,9 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       `Warranty: <b>${pl.warranty_text}</b>\n` +
       `Total Paid: <b>$${orderCost.toFixed(2)}</b> (from Wallet)\n` +
       `Remaining Balance: <b>$${newBalance}</b>\n\n` +
-      `📦 <b>YOUR DIGITAL PRODUCT CREDENTIALS:</b>\n` +
+      `📦 <b>CREDENTIALS (TEXT FORM):</b>\n` +
       `<code>${selectedInv.content}</code>\n\n` +
-      `<i>Save this message! You can also view this anytime under "My Orders".</i>`;
+      `<i>A backup .txt file with these credentials has also been attached below!</i>`;
 
     await editMessageText(chatId, messageId, successMsg, {
       inline_keyboard: [
@@ -690,6 +723,29 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
         [{ text: '🛍 Continue Shopping', callback_data: 'store_page:0' }]
       ]
     });
+
+    // 2. File Delivery Format (.txt attachment)
+    const fileHeader =
+      `============================================================\n` +
+      `${STORE_NAME} - OFFICIAL ORDER DELIVERY\n` +
+      `============================================================\n` +
+      `Order ID: #ORD${orderId}\n` +
+      `Product:  ${pl.product_name} (${pl.name})\n` +
+      `Warranty: ${pl.warranty_text}\n` +
+      `Date:     ${new Date().toISOString()}\n` +
+      `------------------------------------------------------------\n` +
+      `ACCESS CREDENTIALS / LICENSE:\n\n` +
+      `${selectedInv.content}\n` +
+      `------------------------------------------------------------\n` +
+      `Support: @${SUPPORT_USERNAME}\n` +
+      `============================================================\n`;
+
+    await sendCredentialsFile(
+      chatId,
+      `order_ORD${orderId}_credentials.txt`,
+      fileHeader,
+      `📁 <b>Order #ORD${orderId} Backup File Attached.</b>`
+    );
 
     sendMessage(
       ADMIN_ID,
@@ -922,7 +978,7 @@ async function rejectDeposit(depositId, adminId, reason = 'Payment unverified') 
 }
 
 // ============================================================================
-// 11. MANUAL ORDER APPROVAL
+// 11. MANUAL ORDER APPROVAL WITH TEXT + FILE DELIVERY
 // ============================================================================
 async function approveManualPayment(orderId, adminId) {
   const pool = getPool();
@@ -955,14 +1011,25 @@ async function approveManualPayment(orderId, adminId) {
       await conn.query('UPDATE inventory SET status = "SOLD", order_id = ? WHERE id = ?', [orderId, item.id]);
       await conn.commit();
 
+      // Text Delivery
       sendMessage(
         ord.user_id,
         `✅ <b>PAYMENT APPROVED & ORDER DELIVERED!</b>\n\n` +
         `Order: <b>#ORD${orderId}</b>\n` +
         `Status: <b>Delivered</b>\n\n` +
-        `📦 <b>CREDENTIALS / ACCESS:</b>\n` +
-        `<code>${item.content}</code>`
+        `📦 <b>CREDENTIALS (TEXT FORM):</b>\n` +
+        `<code>${item.content}</code>\n\n` +
+        `<i>A backup .txt file with these credentials has also been attached below!</i>`
       );
+
+      // File Delivery
+      await sendCredentialsFile(
+        ord.user_id,
+        `order_ORD${orderId}_credentials.txt`,
+        `ISell Store - Order #ORD${orderId}\nCredentials:\n${item.content}\n\nSupport: @${SUPPORT_USERNAME}`,
+        `📁 <b>Order #ORD${orderId} Backup File Attached.</b>`
+      );
+
       return { success: true, message: `Order #${orderId} approved and fulfilled instantly.` };
     } else {
       await conn.query('UPDATE orders SET status = "PAID" WHERE id = ?', [orderId]);
@@ -1047,41 +1114,61 @@ async function broadcastRestockToAllUsers(planId, addedCount) {
 }
 
 // ============================================================================
-// 13. ADMIN DASHBOARD
+// 13. ADMIN DASHBOARD (HARDENED & DEFENSIVE)
 // ============================================================================
 async function renderAdminDashboard(chatId, messageId = null) {
   const db = getPool();
 
-  const [usersCount] = await db.query('SELECT COUNT(*) as count FROM users');
-  const [ordersCount] = await db.query('SELECT COUNT(*) as count FROM orders');
-  const [pendingOrders] = await db.query('SELECT COUNT(*) as count FROM orders WHERE status = "PAYMENT_SUBMITTED"');
-  const [pendingDeposits] = await db.query('SELECT COUNT(*) as count FROM deposits WHERE status = "PENDING"');
-  const [revenueRow] = await db.query('SELECT COALESCE(SUM(amount), 0) as total FROM orders WHERE status IN ("PAID", "DELIVERED")');
-  const [liabilityRow] = await db.query('SELECT COALESCE(SUM(balance), 0) as total FROM wallets');
-  const [availPlans] = await db.query(
-    `SELECT COUNT(DISTINCT pl.id) as count 
-     FROM plans pl 
-     JOIN inventory i ON pl.id = i.plan_id 
-     WHERE i.status = 'AVAILABLE'`
-  );
-  const [totalPlans] = await db.query('SELECT COUNT(*) as count FROM plans WHERE is_active = 1');
+  try {
+    const [usersCount] = await db.query('SELECT COUNT(*) as count FROM users');
+    const [ordersCount] = await db.query('SELECT COUNT(*) as count FROM orders');
+    const [pendingOrders] = await db.query('SELECT COUNT(*) as count FROM orders WHERE status = "PAYMENT_SUBMITTED"');
+    const [pendingDeposits] = await db.query('SELECT COUNT(*) as count FROM deposits WHERE status = "PENDING"');
+    const [revenueRow] = await db.query('SELECT COALESCE(SUM(amount), 0) as total FROM orders WHERE status IN ("PAID", "DELIVERED")');
+    const [liabilityRow] = await db.query('SELECT COALESCE(SUM(balance), 0) as total FROM wallets');
+    const [availPlans] = await db.query(
+      `SELECT COUNT(DISTINCT pl.id) as count 
+       FROM plans pl 
+       JOIN inventory i ON pl.id = i.plan_id 
+       WHERE i.status = 'AVAILABLE'`
+    );
+    const [totalPlans] = await db.query('SELECT COUNT(*) as count FROM plans WHERE is_active = 1');
 
-  const text =
-    `👑 <b>ISELL STORE — ADMIN DASHBOARD</b>\n\n` +
-    `👥 <b>Total Users:</b> ${usersCount[0].count}\n` +
-    `🧾 <b>Total Orders:</b> ${ordersCount[0].count}\n` +
-    `⏳ <b>Pending Payments:</b> ${pendingOrders[0].count}\n` +
-    `💳 <b>Pending Deposits:</b> ${pendingDeposits[0].count}\n` +
-    `💰 <b>Total Revenue:</b> $${Number(revenueRow[0].total).toFixed(2)} USD\n` +
-    `💵 <b>Wallet Liability:</b> $${Number(liabilityRow[0].total).toFixed(2)} USD\n` +
-    `🟢 <b>In-Stock Plans:</b> ${availPlans[0].count} / ${totalPlans[0].count}\n`;
+    const totalUsers = usersCount[0]?.count || 0;
+    const totalOrders = ordersCount[0]?.count || 0;
+    const pendOrd = pendingOrders[0]?.count || 0;
+    const pendDep = pendingDeposits[0]?.count || 0;
+    const rev = Number(revenueRow[0]?.total || 0).toFixed(2);
+    const liab = Number(liabilityRow[0]?.total || 0).toFixed(2);
+    const inStockPlans = availPlans[0]?.count || 0;
+    const totPlans = totalPlans[0]?.count || 0;
 
-  const keyboard = getAdminPanelKeyboard();
+    const text =
+      `👑 <b>ISELL STORE — ADMIN DASHBOARD</b>\n\n` +
+      `👥 <b>Total Customers:</b> ${totalUsers}\n` +
+      `🧾 <b>Total Orders:</b> ${totalOrders}\n` +
+      `⏳ <b>Pending Order Payments:</b> ${pendOrd}\n` +
+      `💳 <b>Pending Wallet Deposits:</b> ${pendDep}\n` +
+      `💰 <b>Total Verified Revenue:</b> $${rev} USD\n` +
+      `💵 <b>Total Customer Wallet Liability:</b> $${liab} USD\n` +
+      `🟢 <b>Active In-Stock Plans:</b> ${inStockPlans} / ${totPlans}\n`;
 
-  if (messageId) {
-    await editMessageText(chatId, messageId, text, keyboard);
-  } else {
-    await sendMessage(chatId, text, keyboard);
+    const keyboard = getAdminPanelKeyboard();
+
+    if (messageId) {
+      await editMessageText(chatId, messageId, text, keyboard);
+    } else {
+      await sendMessage(chatId, text, keyboard);
+    }
+  } catch (err) {
+    console.error('Error in renderAdminDashboard:', err);
+    const fallbackText = `👑 <b>ADMIN PANEL</b>\n\nAn error occurred loading live metrics: ${err.message}`;
+    const keyboard = getAdminPanelKeyboard();
+    if (messageId) {
+      await editMessageText(chatId, messageId, fallbackText, keyboard);
+    } else {
+      await sendMessage(chatId, fallbackText, keyboard);
+    }
   }
 }
 
@@ -1275,8 +1362,9 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
 
     const buttons = [];
     for (const r of results) {
+      const hasStock = r.stock_count > 0;
       buttons.push([{
-        text: `${r.emoji} ${r.name}`,
+        text: `${hasStock ? '🔵' : '🔴'} ${r.emoji} ${r.name}`,
         callback_data: `view_prod:${r.id}:0`
       }]);
     }
@@ -1286,7 +1374,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     return true;
   }
 
-  if (userId === ADMIN_ID) {
+  if (Number(userId) === ADMIN_ID) {
     if (state === 'ADM_ADD_PROD_NAME') {
       await setUserState(userId, 'ADM_ADD_PROD_EMOJI', { name: text.trim() });
       await sendMessage(chatId, `Enter an emoji for <b>${text.trim()}</b> (e.g. 🤖, 🎨, 🎵, 🎬):`);
@@ -1417,12 +1505,22 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       await clearUserState(userId);
 
       if (ord.length > 0) {
-        sendMessage(
+        // Send text format
+        await sendMessage(
           ord[0].user_id,
           `📦 <b>ORDER #ORD${orderId} FULFILLED!</b>\n\n` +
           `Your order has been delivered by the administrator.\n\n` +
-          `<b>ACCESS CREDENTIALS / INSTRUCTIONS:</b>\n` +
-          `<code>${text.trim()}</code>`
+          `<b>ACCESS CREDENTIALS (TEXT FORM):</b>\n` +
+          `<code>${text.trim()}</code>\n\n` +
+          `<i>A backup .txt file with these credentials has also been attached below!</i>`
+        );
+
+        // Send file format
+        await sendCredentialsFile(
+          ord[0].user_id,
+          `order_ORD${orderId}_credentials.txt`,
+          `ISell Store - Order #ORD${orderId}\nCredentials:\n${text.trim()}\n\nSupport: @${SUPPORT_USERNAME}`,
+          `📁 <b>Order #ORD${orderId} Backup File Attached.</b>`
         );
       }
 
@@ -1474,8 +1572,8 @@ async function renderUserProfile(chatId, messageId, user) {
     `Username: ${user.username ? `@${user.username}` : '<i>Not set</i>'}\n` +
     `Telegram ID: <code>${user.id}</code>\n\n` +
     `💰 <b>Wallet Balance:</b> $${balance} USD\n` +
-    `🧾 <b>Total Orders:</b> ${totalOrders[0].count}\n` +
-    `✅ <b>Completed Orders:</b> ${compOrders[0].count}`;
+    `🧾 <b>Total Orders:</b> ${totalOrders[0]?.count || 0}\n` +
+    `✅ <b>Completed Orders:</b> ${compOrders[0]?.count || 0}`;
 
   const keyboard = {
     inline_keyboard: [
@@ -1508,7 +1606,7 @@ async function renderUserOrders(chatId, messageId, userId, page = 0) {
   );
 
   const [totalRows] = await db.query('SELECT COUNT(*) as count FROM orders WHERE user_id = ?', [userId]);
-  const total = totalRows[0].count;
+  const total = totalRows[0]?.count || 0;
   const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
 
   let msg = `📦 <b>MY ORDERS (${total} Total)</b>\n\n`;
@@ -1544,7 +1642,7 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
      JOIN plans pl ON o.plan_id = pl.id 
      JOIN products p ON pl.product_id = p.id 
      WHERE o.id = ? AND (o.user_id = ? OR ? = ?)`,
-    [orderId, userId, userId, ADMIN_ID]
+    [orderId, userId, Number(userId), ADMIN_ID]
   );
 
   if (orders.length === 0) {
@@ -1586,14 +1684,15 @@ async function handleCallbackQuery(callbackQuery) {
 
   await syncUser(fromUser);
 
-  if ((data.startsWith('admin_') || data.startsWith('adm_')) && userId !== ADMIN_ID) {
+  // Admin access guard (Number-safe check)
+  if ((data.startsWith('admin_') || data.startsWith('adm_')) && Number(userId) !== ADMIN_ID) {
     return await answerCallbackQuery(queryId, '🚫 Unauthorized: Admin access only.', true);
   }
 
   if (data === 'main_home') {
     await clearUserState(userId);
     await answerCallbackQuery(queryId);
-    if (userId === ADMIN_ID) {
+    if (Number(userId) === ADMIN_ID) {
       return await editMessageText(
         chatId,
         messageId,
@@ -1646,7 +1745,7 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data.startsWith('pay_wallet:')) {
     const planId = parseInt(data.split(':')[1], 10);
-    await answerCallbackQuery(queryId, 'Processing wallet payment...');
+    await answerCallbackQuery(queryId, 'Processing wallet purchase...');
     return await executeWalletPurchase(chatId, messageId, planId, userId);
   }
 
@@ -1785,7 +1884,7 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin Dashboard
+  // Admin Dashboard (Explicitly answer immediately to prevent button hangs)
   if (data === 'admin_dashboard') {
     await answerCallbackQuery(queryId);
     return await renderAdminDashboard(chatId, messageId);
@@ -1982,10 +2081,9 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 // ============================================================================
-// 17. MAIN VERCEL HANDLER WITH LIVE BROWSER DIAGNOSTICS
+// 17. MAIN VERCEL SERVERLESS HANDLER
 // ============================================================================
 export default async function handler(req, res) {
-  // LIVE BROWSER DIAGNOSTIC (Open https://your-domain.vercel.app/api/bot in any browser)
   if (req.method === 'GET') {
     try {
       await initDatabase();
@@ -2008,8 +2106,7 @@ export default async function handler(req, res) {
         status: 'DATABASE OR SERVER ERROR',
         error_message: err.message,
         error_code: err.code || 'UNKNOWN',
-        sql_message: err.sqlMessage || 'None',
-        help: 'Check your DATABASE_URL format or database permissions in TiDB Cloud.'
+        sql_message: err.sqlMessage || 'None'
       });
     }
   }
@@ -2059,7 +2156,7 @@ export default async function handler(req, res) {
       // Commands
       if (text.startsWith('/start')) {
         await clearUserState(userId);
-        if (userId === ADMIN_ID) {
+        if (Number(userId) === ADMIN_ID) {
           await sendMessage(
             chatId,
             `👑 <b>Welcome Admin</b>\n\n${STORE_NAME} Administration Panel`,
@@ -2083,7 +2180,7 @@ export default async function handler(req, res) {
       }
 
       if (text === '/admin' || text === '/dashboard') {
-        if (userId !== ADMIN_ID) {
+        if (Number(userId) !== ADMIN_ID) {
           await sendMessage(chatId, '❌ Unauthorized command.');
         } else {
           await renderAdminDashboard(chatId);
