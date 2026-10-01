@@ -141,6 +141,7 @@ async function initDatabase() {
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       user_id BIGINT NOT NULL,
       plan_id INT NOT NULL,
+      quantity INT NOT NULL DEFAULT 1,
       amount DECIMAL(12, 2) NOT NULL,
       currency VARCHAR(10) NOT NULL DEFAULT 'USD',
       payment_method VARCHAR(50) NOT NULL,
@@ -206,10 +207,17 @@ async function initDatabase() {
     await db.query(q);
   }
 
+  // Ensure 'quantity' column exists on orders table if already created
+  try {
+    await db.query('ALTER TABLE orders ADD COLUMN quantity INT NOT NULL DEFAULT 1 AFTER plan_id');
+  } catch (e) {
+    // Column already exists
+  }
+
   dbInitialized = true;
 }
 
-// Reset store products and plans (Called on-demand or manually)
+// Reset store products and plans on demand
 async function wipeStoreData() {
   const db = getPool();
   try {
@@ -271,7 +279,7 @@ async function sendPhoto(chatId, fileId, caption = '', replyMarkup = null) {
   return await callTelegram('sendPhoto', payload);
 }
 
-// In-Memory Stream Delivery for Credentials (.txt)
+// Send Credentials as a downloadable .txt file
 async function sendCredentialsFile(chatId, filename, textContent, caption = '') {
   try {
     const formData = new FormData();
@@ -383,14 +391,14 @@ function getAdminPanelKeyboard() {
 }
 
 // ============================================================================
-// 6. EXPANDED CATEGORY LAYOUT (LARGE VIEW: 50 ITEMS, FULL BLUE/RED COLOR BLOCKS)
+// 6. PRODUCT CATEGORIES VIEW (NO QUANTITY SHOWN IN BUTTONS, COLOR ONLY)
 // ============================================================================
 async function renderStorePage(chatId, messageId = null, page = 0) {
   const db = getPool();
-  const PAGE_SIZE = 50; // Large layout so all products appear together without pagination
+  const PAGE_SIZE = 50;
   const offset = page * PAGE_SIZE;
 
-  // Real-time calculated available inventory count per product
+  // Retrieve products with real-time stock indicator
   const [products] = await db.query(
     `SELECT p.id, p.name, p.emoji,
       (SELECT COUNT(i.id) 
@@ -414,7 +422,7 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     const emptyText =
       `📁 <b>Categories</b>\n\n` +
       `<i>The store is currently empty.</i>\n\n` +
-      (Number(chatId) === ADMIN_ID ? `👉 <b>Admin:</b> Click <b>➕ Add First Product</b> below to start!` : `Please check back shortly!`);
+      (Number(chatId) === ADMIN_ID ? `👉 <b>Admin:</b> Click <b>➕ Add First Product</b> below to create one!` : `Please check back shortly!`);
 
     const emptyKeyboard = {
       inline_keyboard: [
@@ -431,18 +439,17 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     return;
   }
 
-  // 2-Column Grid with Full-Width Color Blocks
+  // 2-Column Grid: ONLY product name, emoji, and color block (NO QUANTITIES HERE)
   const inlineGrid = [];
   let currentRow = [];
 
   for (const item of products) {
-    const stock = Number(item.stock_count || 0);
-    const hasStock = stock > 0;
+    const hasStock = Number(item.stock_count || 0) > 0;
 
-    // Full Blue Block for In-Stock; Full Red Block for Out-of-Stock
+    // Full Blue for Available; Full Red for Unavailable
     const label = hasStock
-      ? `🟦 ${item.emoji} ${item.name} (${stock}) 🟦`
-      : `🟥 ${item.emoji} ${item.name} (Sold Out) 🟥`;
+      ? `🟦 ${item.emoji} ${item.name} 🟦`
+      : `🟥 ${item.emoji} ${item.name} 🟥`;
 
     currentRow.push({
       text: label,
@@ -458,7 +465,6 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
     inlineGrid.push(currentRow);
   }
 
-  // Navigation rows (only shown if exceeding 50 products)
   const navRow = [];
   if (page > 0) navRow.push({ text: '◀️ Prev', callback_data: `store_page:${page - 1}` });
   if (totalPages > 1) navRow.push({ text: `Page ${page + 1}/${totalPages}`, callback_data: `store_page:${page}` });
@@ -473,8 +479,8 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
 
   const text =
     `📁 <b>Categories</b>\n\n` +
-    `<i>Pick a product below to view available packages:</i>\n\n` +
-    `🟦 <b>Blue</b> = In Stock & Ready for Instant Delivery\n` +
+    `<i>Pick a product below to view packages:</i>\n\n` +
+    `🟦 <b>Blue</b> = In Stock\n` +
     `🟥 <b>Red</b> = Out of Stock`;
 
   const keyboard = { inline_keyboard: inlineGrid };
@@ -487,7 +493,7 @@ async function renderStorePage(chatId, messageId = null, page = 0) {
 }
 
 // ============================================================================
-// 7. PRODUCT PLANS UI (FULL GREEN FOR AVAILABLE | FULL RED FOR SOLD OUT)
+// 7. PRODUCT PLANS UI (QUANTITIES EXCLUSIVELY DISPLAYED HERE)
 // ============================================================================
 async function renderProductPlans(chatId, messageId, productId, returnPage = 0) {
   const db = getPool();
@@ -500,7 +506,6 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
   }
   const prod = prods[0];
 
-  // Live stock evaluation per plan
   const [plans] = await db.query(
     `SELECT pl.*, 
       (SELECT COUNT(i.id) 
@@ -532,11 +537,10 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
     for (const pl of plans) {
       const stock = Number(pl.available_stock || 0);
       if (stock > 0) {
-        // Full Green Banner for in-stock plan
+        // Stock quantities are shown here in the plans section
         const label = `🟩 ${pl.name} | $${Number(pl.price).toFixed(2)} | ${stock} Avail 🟩`;
         keyboard.push([{ text: label, callback_data: `view_plan:${pl.id}:${returnPage}` }]);
       } else {
-        // Full Red Banner for sold out plan
         const label = `🟥 ${pl.name} | $${Number(pl.price).toFixed(2)} | Sold Out 🟥`;
         keyboard.push([{ text: label, callback_data: `view_plan:${pl.id}:${returnPage}` }]);
       }
@@ -552,7 +556,7 @@ async function renderProductPlans(chatId, messageId, productId, returnPage = 0) 
 }
 
 // ============================================================================
-// 8. PLAN DETAILS & ATOMIC PURCHASE WITH AUTOMATIC STOCK DECREMENT
+// 8. PLAN DETAILS VIEW
 // ============================================================================
 async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, userId = null) {
   const db = getPool();
@@ -579,14 +583,15 @@ async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, user
     `<b>${pl.product_emoji} ${pl.product_name} — ${pl.name}</b>\n\n` +
     `📋 <b>DETAILS:</b>\n` +
     `${pl.details || 'Instant digital fulfillment upon purchase.'}\n\n` +
-    `💵 <b>Price:</b> $${Number(pl.price).toFixed(2)} ${pl.currency}\n` +
+    `💵 <b>Price per item:</b> $${Number(pl.price).toFixed(2)} ${pl.currency}\n` +
     `⏱️ <b>Duration:</b> ${pl.duration_text}\n` +
     `🛡️ <b>Warranty:</b> ${pl.warranty_text}\n` +
-    `📦 <b>Stock:</b> ${inStock ? `🟩 ${stock} Available` : '🟥 Sold Out'}\n`;
+    `📦 <b>Stock Available:</b> ${inStock ? `🟩 ${stock} in stock` : '🟥 Sold Out'}\n`;
 
   const buttons = [];
   if (inStock) {
-    buttons.push([{ text: '🛒 BUY NOW', callback_data: `order_prep:${pl.id}:${returnPage}` }]);
+    // Navigates directly to quantity selector starting at quantity 1
+    buttons.push([{ text: '🛒 BUY NOW', callback_data: `qty_select:${pl.id}:1:${returnPage}` }]);
   } else {
     buttons.push([{ text: '🔔 Notify Me On Restock', callback_data: `notif_sub:${pl.id}:${returnPage}` }]);
   }
@@ -599,7 +604,10 @@ async function renderPlanDetails(chatId, messageId, planId, returnPage = 0, user
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
 
-async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId) {
+// ============================================================================
+// 9. INTERACTIVE QUANTITY SELECTOR (BUTTONS + CUSTOM ENTERING)
+// ============================================================================
+async function renderQuantitySelector(chatId, messageId, planId, selectedQty = 1, returnPage = 0) {
   const db = getPool();
   const [plans] = await db.query(
     `SELECT pl.*, p.name as product_name, p.emoji as product_emoji,
@@ -610,41 +618,121 @@ async function renderOrderCheckout(chatId, messageId, planId, returnPage, userId
     [planId]
   );
 
-  if (plans.length === 0 || Number(plans[0].stock_count || 0) <= 0) {
-    await editMessageText(chatId, messageId, '❌ Sorry, this item is sold out or unavailable.', {
-      inline_keyboard: [[{ text: '👈 Back', callback_data: `view_prod:${plans[0]?.product_id || 1}:${returnPage}` }]]
+  if (plans.length === 0) {
+    return await editMessageText(chatId, messageId, '❌ Plan unavailable.');
+  }
+
+  const pl = plans[0];
+  const maxStock = Number(pl.stock_count || 0);
+
+  if (maxStock <= 0) {
+    return await editMessageText(chatId, messageId, '❌ Sorry, this item is sold out.', {
+      inline_keyboard: [[{ text: '👈 Back', callback_data: `view_prod:${pl.product_id}:${returnPage}` }]]
+    });
+  }
+
+  // Constrain quantity between 1 and maxStock
+  let qty = Math.max(1, Math.min(Number(selectedQty) || 1, maxStock));
+  const totalPrice = (Number(pl.price) * qty).toFixed(2);
+
+  const text =
+    `🔢 <b>SELECT QUANTITY</b>\n\n` +
+    `Product: <b>${pl.product_emoji} ${pl.product_name}</b>\n` +
+    `Plan: <b>${pl.name}</b>\n` +
+    `Price per unit: <b>$${Number(pl.price).toFixed(2)}</b>\n` +
+    `Available In Stock: <b>${maxStock}</b>\n\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `Selected Quantity: <b>${qty}</b>\n` +
+    `Order Total: <b>$${totalPrice} ${pl.currency}</b>\n` +
+    `━━━━━━━━━━━━━━━━━━\n\n` +
+    `<i>Adjust using the buttons below or click 'Enter Custom' to type:</i>`;
+
+  const minusQty = Math.max(1, qty - 1);
+  const plusQty = Math.min(maxStock, qty + 1);
+
+  const keyboard = [
+    // Step adjustments
+    [
+      { text: '➖ 1', callback_data: `qty_select:${pl.id}:${minusQty}:${returnPage}` },
+      { text: `Current: ${qty}`, callback_data: `qty_select:${pl.id}:${qty}:${returnPage}` },
+      { text: '➕ 1', callback_data: `qty_select:${pl.id}:${plusQty}:${returnPage}` }
+    ],
+    // Quick bulk presets
+    [
+      { text: '2', callback_data: `qty_select:${pl.id}:${Math.min(2, maxStock)}:${returnPage}` },
+      { text: '5', callback_data: `qty_select:${pl.id}:${Math.min(5, maxStock)}:${returnPage}` },
+      { text: '10', callback_data: `qty_select:${pl.id}:${Math.min(10, maxStock)}:${returnPage}` },
+      { text: `Max (${maxStock})`, callback_data: `qty_select:${pl.id}:${maxStock}:${returnPage}` }
+    ],
+    // Custom typing button
+    [
+      { text: '✏️ Enter Custom Quantity', callback_data: `qty_custom:${pl.id}:${returnPage}` }
+    ],
+    // Checkout proceed
+    [
+      { text: `✅ Proceed to Checkout ($${totalPrice})`, callback_data: `order_prep:${pl.id}:${qty}:${returnPage}` }
+    ],
+    [
+      { text: '👈 Back', callback_data: `view_plan:${pl.id}:${returnPage}` }
+    ]
+  ];
+
+  await editMessageText(chatId, messageId, text, { inline_keyboard: keyboard });
+}
+
+// ============================================================================
+// 10. CHECKOUT & ATOMIC BULK WALLET PURCHASE
+// ============================================================================
+async function renderOrderCheckout(chatId, messageId, planId, quantity = 1, returnPage = 0, userId = null) {
+  const db = getPool();
+  const [plans] = await db.query(
+    `SELECT pl.*, p.name as product_name, p.emoji as product_emoji,
+      (SELECT COUNT(i.id) FROM inventory i WHERE i.plan_id = pl.id AND UPPER(i.status) = 'AVAILABLE') as stock_count
+     FROM plans pl
+     JOIN products p ON pl.product_id = p.id
+     WHERE pl.id = ? AND pl.is_active = 1`,
+    [planId]
+  );
+
+  const qty = Number(quantity) || 1;
+
+  if (plans.length === 0 || Number(plans[0].stock_count || 0) < qty) {
+    await editMessageText(chatId, messageId, '❌ Requested quantity is no longer available in stock.', {
+      inline_keyboard: [[{ text: '👈 Back', callback_data: `qty_select:${planId}:1:${returnPage}` }]]
     });
     return;
   }
 
   const pl = plans[0];
   const walletBal = await getWalletBalance(userId);
-  const cost = Number(pl.price).toFixed(2);
+  const cost = (Number(pl.price) * qty).toFixed(2);
 
   const msg =
     `💳 <b>CHECKOUT & PAYMENT</b>\n\n` +
     `Item: <b>${pl.product_emoji} ${pl.product_name} (${pl.name})</b>\n` +
+    `Quantity: <b>${qty}x</b>\n` +
     `Duration: <b>${pl.duration_text}</b>\n` +
     `Warranty: <b>${pl.warranty_text}</b>\n\n` +
     `💰 <b>Your Wallet Balance:</b> $${walletBal}\n` +
-    `💵 <b>Order Total:</b> $${cost}\n\n` +
+    `💵 <b>Total Order Amount:</b> $${cost}\n\n` +
     `Select your payment method below:`;
 
   const buttons = [];
-  buttons.push([{ text: `💰 Pay From Wallet ($${walletBal})`, callback_data: `pay_wallet:${pl.id}` }]);
+  buttons.push([{ text: `💰 Pay From Wallet ($${walletBal})`, callback_data: `pay_wallet:${pl.id}:${qty}` }]);
   buttons.push([
-    { text: '🟡 Binance Pay', callback_data: `pay_manual:Binance:${pl.id}` },
-    { text: '₮ USDT BEP20', callback_data: `pay_manual:USDT_BEP20:${pl.id}` }
+    { text: '🟡 Binance Pay', callback_data: `pay_manual:Binance:${pl.id}:${qty}` },
+    { text: '₮ USDT BEP20', callback_data: `pay_manual:USDT_BEP20:${pl.id}:${qty}` }
   ]);
-  buttons.push([{ text: '👈 Cancel & Back', callback_data: `view_plan:${pl.id}:${returnPage}` }]);
+  buttons.push([{ text: '👈 Change Quantity', callback_data: `qty_select:${pl.id}:${qty}:${returnPage}` }]);
 
   await editMessageText(chatId, messageId, msg, { inline_keyboard: buttons });
 }
 
-// ATOMIC WALLET PURCHASE & IMMEDIATE LIVE STOCK DECREMENT
-async function executeWalletPurchase(chatId, messageId, planId, userId) {
+// ATOMIC BULK WALLET PURCHASE (Locks exact quantity and decrements stock)
+async function executeWalletPurchase(chatId, messageId, planId, quantity = 1, userId = null) {
   const pool = getPool();
   const conn = await pool.getConnection();
+  const qty = Math.max(1, Number(quantity) || 1);
 
   try {
     await conn.beginTransaction();
@@ -670,7 +758,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       return await editMessageText(chatId, messageId, '❌ Plan unavailable.');
     }
     const pl = plans[0];
-    const orderCost = Number(pl.price);
+    const orderCost = Number((Number(pl.price) * qty).toFixed(2));
 
     if (currentBalance < orderCost) {
       await conn.rollback();
@@ -680,7 +768,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
         messageId,
         `❌ <b>INSUFFICIENT BALANCE</b>\n\n` +
         `Wallet Balance: $${currentBalance.toFixed(2)}\n` +
-        `Required Total: $${orderCost.toFixed(2)}\n` +
+        `Required Total: $${orderCost.toFixed(2)} (${qty}x)\n` +
         `You need: <b>$${needed}</b> more.\n\n` +
         `Please top up your wallet balance first.`,
         {
@@ -692,61 +780,66 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       );
     }
 
-    // 3. Atomically Lock 1 Available Inventory Item
+    // 3. Atomically Lock Exactly N Available Items
     const [invRows] = await conn.query(
       `SELECT id, content FROM inventory 
        WHERE plan_id = ? AND UPPER(status) = 'AVAILABLE' 
-       LIMIT 1 FOR UPDATE`,
-      [planId]
+       LIMIT ? FOR UPDATE`,
+      [planId, qty]
     );
 
-    if (invRows.length === 0) {
+    if (invRows.length < qty) {
       await conn.rollback();
       return await editMessageText(
         chatId,
         messageId,
-        '❌ <b>OUT OF STOCK</b>\n\nSorry, someone just bought the last available stock item!',
+        `❌ <b>OUT OF STOCK</b>\n\nSorry, only ${invRows.length} items remain in stock.`,
         { inline_keyboard: [[{ text: '👈 Back to Store', callback_data: 'store_page:0' }]] }
       );
     }
 
-    const selectedInv = invRows[0];
     const newBalance = (currentBalance - orderCost).toFixed(2);
+    const combinedCredentials = invRows.map(i => i.content).join('\n---\n');
 
-    // 4. Deduct wallet balance
+    // 4. Deduct wallet
     await conn.query('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [orderCost, userId]);
 
-    // 5. Create Completed Order Record
+    // 5. Create Order Record with quantity
     const [orderRes] = await conn.query(
-      `INSERT INTO orders (user_id, plan_id, amount, payment_method, status, delivery_content)
-       VALUES (?, ?, ?, 'WALLET', 'DELIVERED', ?)`,
-      [userId, planId, orderCost, selectedInv.content]
+      `INSERT INTO orders (user_id, plan_id, quantity, amount, payment_method, status, delivery_content)
+       VALUES (?, ?, ?, ?, 'WALLET', 'DELIVERED', ?)`,
+      [userId, planId, qty, orderCost, combinedCredentials]
     );
     const orderId = orderRes.insertId;
 
-    // 6. IMMEDIATELY update inventory status to SOLD
-    await conn.query(`UPDATE inventory SET status = 'SOLD', order_id = ? WHERE id = ?`, [orderId, selectedInv.id]);
+    // 6. IMMEDIATELY Mark all N items as SOLD
+    const itemIds = invRows.map(i => i.id);
+    await conn.query(
+      `UPDATE inventory SET status = 'SOLD', order_id = ? WHERE id IN (?)`,
+      [orderId, itemIds]
+    );
 
-    // 7. Record transaction in wallet history
+    // 7. Record transaction with accurate order link
     await conn.query(
       `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, reference_id, description)
        VALUES (?, 'PURCHASE', ?, ?, ?, ?)`,
-      [userId, orderCost, newBalance, `ORD#${orderId}`, `${pl.product_emoji} ${pl.product_name} - ${pl.name}`]
+      [userId, orderCost, newBalance, `ORD#${orderId}`, `${qty}x ${pl.product_name} - ${pl.name}`]
     );
 
     await conn.commit();
 
-    // 8. Deliver credentials as formatted Text
+    // 8. Text Delivery
     const successMsg =
       `🎉 <b>ORDER COMPLETED & DELIVERED!</b>\n\n` +
       `Order: <b>#ORD${orderId}</b>\n` +
       `Product: <b>${pl.product_emoji} ${pl.product_name} (${pl.name})</b>\n` +
+      `Quantity: <b>${qty}x Delivered</b>\n` +
       `Warranty: <b>${pl.warranty_text}</b>\n` +
-      `Total Paid: <b>$${orderCost.toFixed(2)}</b> (from Wallet)\n` +
-      `Remaining Balance: <b>$${newBalance}</b>\n\n` +
+      `Total Paid: <b>$${orderCost.toFixed(2)}</b>\n` +
+      `Remaining Wallet: <b>$${newBalance}</b>\n\n` +
       `📦 <b>CREDENTIALS (TEXT FORM):</b>\n` +
-      `<code>${selectedInv.content}</code>\n\n` +
-      `<i>A backup .txt file with these credentials has also been attached below!</i>`;
+      `<code>${combinedCredentials}</code>\n\n` +
+      `<i>A backup .txt file with all ${qty} credentials is attached below!</i>`;
 
     await editMessageText(chatId, messageId, successMsg, {
       inline_keyboard: [
@@ -755,18 +848,19 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       ]
     });
 
-    // 9. Deliver credentials as Downloadable .txt Document
+    // 9. Downloadable .txt Document Delivery
     const fileHeader =
       `============================================================\n` +
       `${STORE_NAME} - OFFICIAL ORDER DELIVERY\n` +
       `============================================================\n` +
       `Order ID: #ORD${orderId}\n` +
       `Product:  ${pl.product_name} (${pl.name})\n` +
+      `Quantity: ${qty} item(s)\n` +
       `Warranty: ${pl.warranty_text}\n` +
       `Date:     ${new Date().toISOString()}\n` +
       `------------------------------------------------------------\n` +
-      `ACCESS CREDENTIALS / LICENSE:\n\n` +
-      `${selectedInv.content}\n` +
+      `ACCESS CREDENTIALS / LICENSES:\n\n` +
+      `${combinedCredentials}\n` +
       `------------------------------------------------------------\n` +
       `Support: @${SUPPORT_USERNAME}\n` +
       `============================================================\n`;
@@ -783,7 +877,7 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
       `🛍 <b>NEW STORE PURCHASE</b>\n\n` +
       `Order: #ORD${orderId}\n` +
       `User: <a href="tg://user?id=${userId}">${userId}</a>\n` +
-      `Item: ${pl.product_name} - ${pl.name}\n` +
+      `Item: ${qty}x ${pl.product_name} (${pl.name})\n` +
       `Amount: $${orderCost.toFixed(2)} (Wallet)`
     );
 
@@ -797,10 +891,12 @@ async function executeWalletPurchase(chatId, messageId, planId, userId) {
 }
 
 // ============================================================================
-// 9. MANUAL ORDER PAYMENT
+// 11. MANUAL ORDER PAYMENT
 // ============================================================================
-async function initiateManualOrderPayment(chatId, messageId, method, planId, userId) {
+async function initiateManualOrderPayment(chatId, messageId, method, planId, quantity = 1, userId = null) {
   const db = getPool();
+  const qty = Math.max(1, Number(quantity) || 1);
+
   const [plans] = await db.query(
     `SELECT pl.*, p.name as product_name, p.emoji as product_emoji 
      FROM plans pl 
@@ -812,11 +908,12 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
     return editMessageText(chatId, messageId, '❌ Plan unavailable.');
   }
   const pl = plans[0];
+  const totalAmount = (Number(pl.price) * qty).toFixed(2);
 
   const [res] = await db.query(
-    `INSERT INTO orders (user_id, plan_id, amount, payment_method, status)
-     VALUES (?, ?, ?, ?, 'PENDING_PAYMENT')`,
-    [userId, planId, pl.price, method]
+    `INSERT INTO orders (user_id, plan_id, quantity, amount, payment_method, status)
+     VALUES (?, ?, ?, ?, ?, 'PENDING_PAYMENT')`,
+    [userId, planId, qty, totalAmount, method]
   );
   const orderId = res.insertId;
 
@@ -826,19 +923,20 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
       `🟡 <b>BINANCE PAY INSTRUCTIONS:</b>\n\n` +
       `Binance Pay ID: <code>${BINANCE_ID}</code>\n` +
       `Recipient: <b>${STORE_NAME}</b>\n` +
-      `Exact Amount: <b>$${Number(pl.price).toFixed(2)} USD</b>`;
+      `Exact Amount: <b>$${totalAmount} USD</b>`;
   } else {
     payInfo =
       `₮ <b>USDT BEP20 (BNB Smart Chain) INSTRUCTIONS:</b>\n\n` +
       `Address: <code>${USDT_BEP20_ADDRESS}</code>\n` +
       `Network: <b>BEP20 (BSC)</b>\n` +
-      `Exact Amount: <b>$${Number(pl.price).toFixed(2)} USDT</b>`;
+      `Exact Amount: <b>$${totalAmount} USDT</b>`;
   }
 
   const promptMsg =
     `🧾 <b>ORDER #ORD${orderId}</b>\n\n` +
     `Product: <b>${pl.product_emoji} ${pl.product_name} (${pl.name})</b>\n` +
-    `Amount Due: <b>$${Number(pl.price).toFixed(2)}</b>\n\n` +
+    `Quantity: <b>${qty}x</b>\n` +
+    `Amount Due: <b>$${totalAmount}</b>\n\n` +
     `${payInfo}\n\n` +
     `⚠️ <b>NEXT STEPS:</b>\n` +
     `1. Send the exact amount above.\n` +
@@ -854,7 +952,7 @@ async function initiateManualOrderPayment(chatId, messageId, method, planId, use
 }
 
 // ============================================================================
-// 10. WALLET & DEPOSITS
+// 12. WALLET & ENHANCED TRANSACTION HISTORY VIEW
 // ============================================================================
 async function renderWalletMenu(chatId, messageId, userId) {
   const balance = await getWalletBalance(userId);
@@ -867,7 +965,7 @@ async function renderWalletMenu(chatId, messageId, userId) {
 
   const keyboard = {
     inline_keyboard: [
-      [{ text: '➕ Top Up Balance', callback_data: 'wallet_deposit' }, { text: '📊 History', callback_data: 'wallet_history:0' }],
+      [{ text: '➕ Top Up Balance', callback_data: 'wallet_deposit' }, { text: '📊 Transaction History', callback_data: 'wallet_history:0' }],
       [{ text: '🔄 Refresh', callback_data: 'wallet_main' }, { text: '🏠 Home', callback_data: 'main_home' }]
     ]
   };
@@ -879,9 +977,10 @@ async function renderWalletMenu(chatId, messageId, userId) {
   }
 }
 
+// Enhanced History Section with clean formatting and reliable data display
 async function renderWalletHistory(chatId, messageId, userId, page = 0) {
   const db = getPool();
-  const PAGE_SIZE = 8;
+  const PAGE_SIZE = 6;
   const offset = page * PAGE_SIZE;
 
   const [txs] = await db.query(
@@ -897,22 +996,28 @@ async function renderWalletHistory(chatId, messageId, userId, page = 0) {
   const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
 
   let msg = `📊 <b>WALLET TRANSACTION HISTORY</b>\n\n`;
+
   if (txs.length === 0) {
-    msg += `<i>No transactions recorded yet.</i>`;
+    msg += `<i>No transactions recorded yet. Top up or purchase a package to see activity!</i>`;
   } else {
     for (const t of txs) {
-      const sign = (t.type === 'DEPOSIT' || t.type === 'REFUND') ? '+' : '-';
-      const formattedDate = new Date(t.created_at).toISOString().replace('T', ' ').substring(0, 16);
-      msg += `<b>${sign} $${Number(t.amount).toFixed(2)}</b> — ${t.type}\n`;
-      msg += `Note: ${t.description || 'N/A'}\n`;
-      msg += `Bal: $${Number(t.balance_after).toFixed(2)} | <i>${formattedDate}</i>\n`;
-      msg += `────────────────────\n`;
+      const isCredit = t.type === 'DEPOSIT' || t.type === 'REFUND';
+      const sign = isCredit ? '🟢 +' : '🔴 -';
+      const dateStr = new Date(t.created_at).toISOString().replace('T', ' ').substring(0, 16);
+
+      msg += `${sign} <b>$${Number(t.amount).toFixed(2)} USD</b>\n`;
+      msg += `Type: <b>${t.type}</b>\n`;
+      msg += `Details: <i>${t.description || t.reference_id || 'System Update'}</i>\n`;
+      msg += `Balance After: <b>$${Number(t.balance_after).toFixed(2)}</b>\n`;
+      msg += `⏱️️ <code>${dateStr}</code>\n`;
+      msg += `────────────────────────\n`;
     }
   }
 
   const nav = [];
-  if (page > 0) nav.push({ text: '◀️ Prev', callback_data: `wallet_history:${page - 1}` });
-  if (page + 1 < totalPages) nav.push({ text: 'Next ▶️️', callback_data: `wallet_history:${page + 1}` });
+  if (page > 0) nav.push({ text: '◀️️ Prev', callback_data: `wallet_history:${page - 1}` });
+  if (totalPages > 1) nav.push({ text: `${page + 1}/${totalPages}`, callback_data: `wallet_history:${page}` });
+  if (page + 1 < totalPages) nav.push({ text: 'Next ▶️', callback_data: `wallet_history:${page + 1}` });
 
   const keyboard = [];
   if (nav.length > 0) keyboard.push(nav);
@@ -1009,7 +1114,7 @@ async function rejectDeposit(depositId, adminId, reason = 'Payment unverified') 
 }
 
 // ============================================================================
-// 11. MANUAL ORDER APPROVAL WITH TEXT + FILE DELIVERY
+// 13. MANUAL ORDER APPROVAL
 // ============================================================================
 async function approveManualPayment(orderId, adminId) {
   const pool = getPool();
@@ -1029,33 +1134,37 @@ async function approveManualPayment(orderId, adminId) {
       return { success: false, message: `Order status is ${ord.status}, expected PAYMENT_SUBMITTED.` };
     }
 
+    const qty = ord.quantity || 1;
+
     const [inv] = await conn.query(
       `SELECT id, content FROM inventory 
        WHERE plan_id = ? AND UPPER(status) = 'AVAILABLE' 
-       LIMIT 1 FOR UPDATE`,
-      [ord.plan_id]
+       LIMIT ? FOR UPDATE`,
+      [ord.plan_id, qty]
     );
 
-    if (inv.length > 0) {
-      const item = inv[0];
-      await conn.query('UPDATE orders SET status = "DELIVERED", delivery_content = ? WHERE id = ?', [item.content, orderId]);
-      await conn.query('UPDATE inventory SET status = "SOLD", order_id = ? WHERE id = ?', [orderId, item.id]);
+    if (inv.length >= qty) {
+      const combinedCredentials = inv.map(i => i.content).join('\n---\n');
+      const itemIds = inv.map(i => i.id);
+
+      await conn.query('UPDATE orders SET status = "DELIVERED", delivery_content = ? WHERE id = ?', [combinedCredentials, orderId]);
+      await conn.query(`UPDATE inventory SET status = "SOLD", order_id = ? WHERE id IN (?)`, [orderId, itemIds]);
       await conn.commit();
 
       sendMessage(
         ord.user_id,
         `✅ <b>PAYMENT APPROVED & ORDER DELIVERED!</b>\n\n` +
-        `Order: <b>#ORD${orderId}</b>\n` +
+        `Order: <b>#ORD${orderId}</b> (${qty}x)\n` +
         `Status: <b>Delivered</b>\n\n` +
         `📦 <b>CREDENTIALS (TEXT FORM):</b>\n` +
-        `<code>${item.content}</code>\n\n` +
+        `<code>${combinedCredentials}</code>\n\n` +
         `<i>A backup .txt file with these credentials has also been attached below!</i>`
       );
 
       await sendCredentialsFile(
         ord.user_id,
         `order_ORD${orderId}_credentials.txt`,
-        `ISell Store - Order #ORD${orderId}\nCredentials:\n${item.content}\n\nSupport: @${SUPPORT_USERNAME}`,
+        `ISell Store - Order #ORD${orderId}\nQuantity: ${qty}\nCredentials:\n${combinedCredentials}\n\nSupport: @${SUPPORT_USERNAME}`,
         `📁 <b>Order #ORD${orderId} Backup File Attached.</b>`
       );
 
@@ -1098,7 +1207,7 @@ async function rejectManualPayment(orderId, adminId, reason = 'Unverified transa
 }
 
 // ============================================================================
-// 12. AUTOMATIC RESTOCK BROADCAST TO ALL USERS
+// 14. AUTOMATIC RESTOCK BROADCAST TO ALL USERS
 // ============================================================================
 async function broadcastRestockToAllUsers(planId, addedCount) {
   const db = getPool();
@@ -1143,7 +1252,7 @@ async function broadcastRestockToAllUsers(planId, addedCount) {
 }
 
 // ============================================================================
-// 13. ADMIN DASHBOARD (IMMEDIATE & DEFENSIVE)
+// 15. ADMIN DASHBOARD
 // ============================================================================
 async function renderAdminDashboard(chatId, messageId = null) {
   const db = getPool();
@@ -1191,7 +1300,7 @@ async function renderAdminDashboard(chatId, messageId = null) {
     }
   } catch (err) {
     console.error('Error in renderAdminDashboard:', err);
-    const fallbackText = `👑 <b>ADMIN PANEL</b>\n\nLoaded with default values.\nStatus: Ready.`;
+    const fallbackText = `👑 <b>ADMIN PANEL</b>\n\nStatus: Ready.`;
     const keyboard = getAdminPanelKeyboard();
     if (messageId) {
       await editMessageText(chatId, messageId, fallbackText, keyboard);
@@ -1202,11 +1311,43 @@ async function renderAdminDashboard(chatId, messageId = null) {
 }
 
 // ============================================================================
-// 14. TEXT & PHOTO INPUT HANDLERS (FSM)
+// 16. TEXT & PHOTO INPUT HANDLERS (FSM)
 // ============================================================================
 async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   const { state, data } = await getUserState(userId);
   if (!state) return false;
+
+  // Custom Quantity Input Handler
+  if (state === 'CUSTOM_QTY_INPUT') {
+    const qty = parseInt(text.trim(), 10);
+    const { planId, returnPage } = data;
+    const db = getPool();
+
+    const [plans] = await db.query(
+      `SELECT (SELECT COUNT(id) FROM inventory WHERE plan_id = ? AND UPPER(status) = 'AVAILABLE') as stock_count 
+       FROM plans WHERE id = ?`,
+      [planId, planId]
+    );
+
+    const available = Number(plans[0]?.stock_count || 0);
+
+    if (isNaN(qty) || qty <= 0) {
+      await sendMessage(chatId, '❌ Please enter a valid positive whole number (e.g. 1, 2, 5):');
+      return true;
+    }
+
+    if (qty > available) {
+      await sendMessage(
+        chatId,
+        `❌ Cannot select ${qty}. Only <b>${available}</b> items are available in stock. Please enter a lower number:`
+      );
+      return true;
+    }
+
+    await clearUserState(userId);
+    await renderQuantitySelector(chatId, null, planId, qty, returnPage);
+    return true;
+  }
 
   if (state === 'DEPOSIT_AMOUNT') {
     const amount = parseFloat(text.replace('$', '').trim());
@@ -1342,7 +1483,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
         `Order: <b>#ORD${o.id}</b>\n` +
         `User ID: <code>${userId}</code>\n` +
         `Product: <b>${o.product_name}</b>\n` +
-        `Plan: <b>${o.plan_name}</b>\n` +
+        `Plan: <b>${o.plan_name} (${o.quantity || 1}x)</b>\n` +
         `Amount: <b>$${Number(o.amount).toFixed(2)}</b>\n` +
         `Method: <b>${o.payment_method}</b>\n` +
         `Transaction: <code>${txRef}</code>`;
@@ -1393,7 +1534,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
     for (const r of results) {
       const hasStock = Number(r.stock_count || 0) > 0;
       buttons.push([{
-        text: hasStock ? `🟦 ${r.emoji} ${r.name} (${r.stock_count}) 🟦` : `🟥 ${r.emoji} ${r.name} (Sold Out) 🟥`,
+        text: hasStock ? `🟦 ${r.emoji} ${r.name} 🟦` : `🟥 ${r.emoji} ${r.name} 🟥`,
         callback_data: `view_prod:${r.id}:0`
       }]);
     }
@@ -1584,7 +1725,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
 }
 
 // ============================================================================
-// 15. USER PROFILE & MY ORDERS
+// 17. USER PROFILE & MY ORDERS
 // ============================================================================
 async function renderUserProfile(chatId, messageId, user) {
   const db = getPool();
@@ -1644,7 +1785,7 @@ async function renderUserOrders(chatId, messageId, userId, page = 0) {
   } else {
     for (const o of orders) {
       msg += `<b>Order #ORD${o.id}</b> — ${o.product_emoji} ${o.product_name}\n`;
-      msg += `Plan: ${o.plan_name} | $${Number(o.amount).toFixed(2)}\n`;
+      msg += `Plan: ${o.plan_name} (${o.quantity || 1}x) | $${Number(o.amount).toFixed(2)}\n`;
       msg += `Status: <b>${o.status}</b> | ${new Date(o.created_at).toISOString().substring(0, 10)}\n\n`;
 
       keyboard.push([{ text: `🔎 View Order #ORD${o.id}`, callback_data: `view_order:${o.id}` }]);
@@ -1681,6 +1822,7 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
     `🧾 <b>ORDER #ORD${o.id}</b>\n\n` +
     `Product: <b>${o.product_emoji} ${o.product_name}</b>\n` +
     `Plan: <b>${o.plan_name}</b>\n` +
+    `Quantity: <b>${o.quantity || 1} item(s)</b>\n` +
     `Duration: <b>${o.duration_text}</b>\n` +
     `Warranty: <b>${o.warranty_text}</b>\n` +
     `Amount Paid: <b>$${Number(o.amount).toFixed(2)} ${o.currency}</b>\n` +
@@ -1698,7 +1840,7 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
 }
 
 // ============================================================================
-// 16. CALLBACK QUERY ROUTER
+// 18. CALLBACK QUERY ROUTER
 // ============================================================================
 async function handleCallbackQuery(callbackQuery) {
   const queryId = callbackQuery.id;
@@ -1709,7 +1851,7 @@ async function handleCallbackQuery(callbackQuery) {
   const chatId = message?.chat?.id || userId;
   const messageId = message?.message_id;
 
-  // Immediate callback acknowledgment to prevent Telegram button freeze
+  // Immediate callback acknowledgment to guarantee instant responsiveness
   await answerCallbackQuery(queryId);
 
   await syncUser(fromUser);
@@ -1761,22 +1903,53 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderPlanDetails(chatId, messageId, planId, returnPage, userId);
   }
 
-  if (data.startsWith('order_prep:')) {
+  // Quantity selection routes
+  if (data.startsWith('qty_select:')) {
+    const parts = data.split(':');
+    const planId = parseInt(parts[1], 10);
+    const qty = parseInt(parts[2], 10) || 1;
+    const returnPage = parseInt(parts[3], 10) || 0;
+    return await renderQuantitySelector(chatId, messageId, planId, qty, returnPage);
+  }
+
+  if (data.startsWith('qty_custom:')) {
     const parts = data.split(':');
     const planId = parseInt(parts[1], 10);
     const returnPage = parseInt(parts[2], 10) || 0;
-    return await renderOrderCheckout(chatId, messageId, planId, returnPage, userId);
+    await setUserState(userId, 'CUSTOM_QTY_INPUT', { planId, returnPage });
+    return await editMessageText(
+      chatId,
+      messageId,
+      `✏️ <b>ENTER CUSTOM QUANTITY</b>\n\n` +
+      `Please reply with the exact number of accounts/licenses you want to purchase (e.g. <code>3</code>):`,
+      { inline_keyboard: [[{ text: '👈 Cancel', callback_data: `qty_select:${planId}:1:${returnPage}` }]] }
+    );
   }
 
+  // Order Prep with Selected Quantity
+  if (data.startsWith('order_prep:')) {
+    const parts = data.split(':');
+    const planId = parseInt(parts[1], 10);
+    const qty = parseInt(parts[2], 10) || 1;
+    const returnPage = parseInt(parts[3], 10) || 0;
+    return await renderOrderCheckout(chatId, messageId, planId, qty, returnPage, userId);
+  }
+
+  // Pay via Wallet with quantity
   if (data.startsWith('pay_wallet:')) {
-    const planId = parseInt(data.split(':')[1], 10);
-    return await executeWalletPurchase(chatId, messageId, planId, userId);
+    const parts = data.split(':');
+    const planId = parseInt(parts[1], 10);
+    const qty = parseInt(parts[2], 10) || 1;
+    return await executeWalletPurchase(chatId, messageId, planId, qty, userId);
   }
 
+  // Manual payment method selected
   if (data.startsWith('pay_manual:')) {
-    const [, method, planIdStr] = data.split(':');
-    const planId = parseInt(planIdStr, 10);
-    return await initiateManualOrderPayment(chatId, messageId, method, planId, userId);
+    const parts = data.split(':');
+    const method = parts[1];
+    const planId = parseInt(parts[2], 10);
+    const qty = parseInt(parts[3], 10) || 1;
+    return await initiateManualOrderPayment(chatId, messageId, method, planId, qty, userId);
   }
 
   if (data.startsWith('order_paid_prompt:')) {
@@ -2098,7 +2271,7 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 // ============================================================================
-// 17. MAIN VERCEL SERVERLESS HANDLER
+// 19. MAIN VERCEL SERVERLESS HANDLER
 // ============================================================================
 export default async function handler(req, res) {
   if (req.method === 'GET') {
