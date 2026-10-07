@@ -1394,7 +1394,7 @@ async function renderAdminPendingPayments(chatId, messageId, page = 0) {
 }
 
 // ============================================================================
-// 16. USER-FACING RESELLER API KEY GENERATOR
+// USER-FACING RESELLER API KEY GENERATOR (FIXED)
 // ============================================================================
 async function handleGenerateApiKey(chatId, messageId, userId) {
   let conn = null;
@@ -1404,16 +1404,25 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
     const pool = getPool();
     conn = await pool.getConnection();
 
+    // Ensure api_key column exists (safely ignored if already present)
+    try {
+      await conn.query('ALTER TABLE users ADD COLUMN api_key VARCHAR(100) NULL UNIQUE');
+    } catch (e) {
+      // Column already exists
+    }
+
+    // Save key to database
     await conn.query('UPDATE users SET api_key = ? WHERE id = ?', [generatedKey, userId]);
 
+    // Use HTML parse mode to prevent Markdown entity errors with hyphens and dots
     const messageText = 
-      `🔑 *Your new API Key*\n\n` +
-      `\`${generatedKey}\`\n\n` +
+      `🔑 <b>Your new API Key</b>\n\n` +
+      `<code>${generatedKey}</code>\n\n` +
       `⏱️ Limit: 120 requests/min\n\n` +
-      `⚠️ Save it now! This key is shown *only once* and cannot be retrieved again\\.\n` +
-      `Send it in the \`x-api-key\` header when calling \`/api/v2/*\` endpoints\\.\n\n` +
-      `🔒 Never share this key with anyone\\.\n\n` +
-      `📚 *Usage guide:* see the [Swagger API Docs](https://your-domain.vercel.app/docs)\\.`;
+      `⚠️ Save it now! This key is shown <b>only once</b> and cannot be retrieved again.\n` +
+      `Send it in the <code>x-api-key</code> header when calling <code>/api/v2/*</code> endpoints.\n\n` +
+      `🔒 Never share this key with anyone.\n\n` +
+      `📚 <b>Usage guide:</b> see the <a href="https://your-domain.vercel.app/docs">Swagger API Docs</a>.`;
 
     const inlineKeyboard = {
       inline_keyboard: [
@@ -1421,14 +1430,7 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
       ]
     };
 
-    await callTelegram('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      text: messageText,
-      parse_mode: 'MarkdownV2',
-      disable_web_page_preview: true,
-      reply_markup: inlineKeyboard
-    });
+    await editMessageText(chatId, messageId, messageText, inlineKeyboard, 'HTML');
 
   } catch (err) {
     console.error('Error generating API key:', err);
