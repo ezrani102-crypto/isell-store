@@ -1,6 +1,7 @@
 // ============================================================================
-// ISELL STORE — PREMIUM TELEGRAM SELLING MARKETPLACE
+// ISELL STORE — PREMIUM TELEGRAM SELLING MARKETPLACE & RESELLER API
 // Optimized for Vercel Serverless & Cloud MySQL (TiDB / PlanetScale / Aiven)
+// Production Domain: https://isell-store.vercel.app
 // ============================================================================
 
 import mysql from 'mysql2/promise';
@@ -16,6 +17,7 @@ const SUPPORT_USERNAME = (process.env.SUPPORT_USERNAME || '@ezrani').replace(/^@
 const BINANCE_ID = process.env.BINANCE_ID || '898551245';
 const USDT_BEP20_ADDRESS = process.env.USDT_BEP20_ADDRESS || '0xa271f85cc7340aceec7d3f7711feae8925bd50fb';
 const DATABASE_URL = process.env.DATABASE_URL || '';
+const PRODUCTION_DOMAIN = 'https://isell-store.vercel.app';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
@@ -30,7 +32,8 @@ function getPool() {
       throw new Error('DATABASE_URL environment variable is missing.');
     }
 
-    const config = {
+    pool = mysql.createPool({
+      uri: DATABASE_URL,
       waitForConnections: true,
       connectionLimit: 10,
       maxIdle: 5,
@@ -41,21 +44,7 @@ function getPool() {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: true
       }
-    };
-
-    try {
-      const url = new URL(DATABASE_URL);
-      config.host = url.hostname;
-      config.port = Number(url.port || 4000);
-      config.user = decodeURIComponent(url.username);
-      config.password = decodeURIComponent(url.password);
-      const dbName = url.pathname.replace(/^\//, '');
-      config.database = dbName || 'test';
-    } catch {
-      config.uri = DATABASE_URL;
-    }
-
-    pool = mysql.createPool(config);
+    });
   }
   return pool;
 }
@@ -209,7 +198,6 @@ async function initDatabase() {
     await db.query(q);
   }
 
-  // Ensure column additions exist on pre-existing databases
   try {
     await db.query('ALTER TABLE orders ADD COLUMN quantity INT NOT NULL DEFAULT 1 AFTER plan_id');
   } catch (e) {}
@@ -1412,7 +1400,8 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
       `⏱️ Limit: 120 requests/min\n\n` +
       `⚠️ Save it now! This key is shown <b>only once</b> and cannot be retrieved again.\n` +
       `Send it in the <code>x-api-key</code> header when calling <code>/api/v2/*</code> endpoints.\n\n` +
-      `🔒 Never share this key with anyone.`;
+      `🔒 Never share this key with anyone.\n\n` +
+      `📚 <b>Interactive Docs:</b> <a href="${PRODUCTION_DOMAIN}/docs">${PRODUCTION_DOMAIN}/docs</a>`;
 
     const inlineKeyboard = {
       inline_keyboard: [
@@ -1434,8 +1423,354 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
     }
   }
 }
+
 // ============================================================================
-// 17. TEXT & PHOTO INPUT HANDLERS (FSM)
+// 17. SWAGGER UI DOCS & RESELLER API v2 ROUTERS
+// ============================================================================
+function renderSwaggerUIDoc() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${STORE_NAME} - Developer & Reseller API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css" />
+  <link rel="icon" type="image/png" href="https://unpkg.com/swagger-ui-dist@5.11.0/favicon-32x32.png" />
+  <style>
+    body { margin: 0; background: #0f172a; }
+    .topbar { display: none !important; }
+    .swagger-ui { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: '/api/v2/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIBundle.SwaggerUIStandalonePreset
+        ],
+        layout: "BaseLayout"
+      });
+    };
+  </script>
+</body>
+</html>`;
+}
+
+function getOpenApiSpec() {
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: `${STORE_NAME} Reseller API`,
+      description: "Automated digital accounts and software licenses delivery API for external bots and reseller integrations.",
+      version: "2.0.0"
+    },
+    servers: [
+      {
+        url: PRODUCTION_DOMAIN,
+        description: "Production Server"
+      }
+    ],
+    components: {
+      securitySchemes: {
+        ApiKeyAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "x-api-key",
+          description: "Your secret reseller key generated via Telegram (e.g., apk_...)"
+        }
+      }
+    },
+    security: [
+      { ApiKeyAuth: [] }
+    ],
+    paths: {
+      "/api/v2/catalog": {
+        get: {
+          summary: "List all active products and plans with real-time stock",
+          responses: {
+            "200": {
+              description: "Catalog successfully retrieved",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      total_products: { type: "integer", example: 12 },
+                      products: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "integer", example: 1 },
+                            name: { type: "string", example: "ChatGPT" },
+                            emoji: { type: "string", example: "🤖" },
+                            plans: {
+                              type: "array",
+                              items: {
+                                type: "object",
+                                properties: {
+                                  id: { type: "integer", example: 5 },
+                                  name: { type: "string", example: "Plus 1 Month" },
+                                  price_usd: { type: "number", example: 14.50 },
+                                  duration: { type: "string", example: "30 Days" },
+                                  warranty: { type: "string", example: "30 day warranty" },
+                                  stock: { type: "integer", example: 24 }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v2/wallet": {
+        get: {
+          summary: "Check reseller account balance and user info",
+          responses: {
+            "200": {
+              description: "Wallet balance retrieved",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      user_id: { type: "integer", example: 123456789 },
+                      username: { type: "string", example: "reseller_pro" },
+                      balance_usd: { type: "number", example: 154.20 }
+                    }
+                  }
+                }
+              }
+            },
+            "401": { description: "Missing or invalid x-api-key" }
+          }
+        }
+      },
+      "/api/v2/orders": {
+        post: {
+          summary: "Instantly purchase items via wallet deduction",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["plan_id"],
+                  properties: {
+                    plan_id: { type: "integer", description: "Plan ID to purchase", example: 5 },
+                    quantity: { type: "integer", description: "Number of accounts/licenses", example: 2 }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": {
+              description: "Order completed and credentials instantly delivered",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      order_id: { type: "integer", example: 504 },
+                      quantity: { type: "integer", example: 2 },
+                      amount_deducted: { type: "number", example: 29.00 },
+                      remaining_balance: { type: "number", example: 125.20 },
+                      credentials: {
+                        type: "array",
+                        items: { type: "string" },
+                        example: ["user1@domain.com:pass123", "user2@domain.com:pass456"]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "400": { description: "Invalid quantity or input" },
+            "402": { description: "Insufficient wallet balance" },
+            "409": { description: "Item out of stock" }
+          }
+        }
+      }
+    }
+  };
+}
+
+async function authenticateApiKey(req) {
+  const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.startsWith('apk_')) {
+    return null;
+  }
+
+  const db = getPool();
+  const [rows] = await db.query(
+    'SELECT u.id, u.username, w.balance FROM users u LEFT JOIN wallets w ON u.id = w.user_id WHERE u.api_key = ? AND u.is_banned = 0',
+    [apiKey.trim()]
+  );
+
+  if (rows.length === 0) return null;
+  return {
+    userId: rows[0].id,
+    username: rows[0].username,
+    balance: Number(rows[0].balance || 0)
+  };
+}
+
+async function handleApiCatalog(res) {
+  const db = getPool();
+  const [products] = await db.query(`SELECT id, name, emoji FROM products WHERE is_active = 1 ORDER BY sort_order ASC, id ASC`);
+  const [plans] = await db.query(`
+    SELECT pl.id, pl.product_id, pl.name, pl.price, pl.duration_text, pl.warranty_text,
+      (SELECT COUNT(i.id) FROM inventory i WHERE i.plan_id = pl.id AND UPPER(i.status) = 'AVAILABLE') AS stock
+    FROM plans pl
+    WHERE pl.is_active = 1
+    ORDER BY pl.sort_order ASC, pl.id ASC
+  `);
+
+  const productMap = products.map(p => ({
+    id: p.id,
+    name: p.name,
+    emoji: p.emoji,
+    plans: plans.filter(pl => pl.product_id === p.id).map(pl => ({
+      id: pl.id,
+      name: pl.name,
+      price_usd: Number(pl.price),
+      duration: pl.duration_text,
+      warranty: pl.warranty_text,
+      stock: Number(pl.stock || 0)
+    }))
+  }));
+
+  return res.status(200).json({ success: true, total_products: productMap.length, products: productMap });
+}
+
+async function handleApiWallet(req, res) {
+  const authUser = await authenticateApiKey(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or missing x-api-key header.' });
+  }
+
+  return res.status(200).json({
+    success: true,
+    user_id: authUser.userId,
+    username: authUser.username,
+    balance_usd: authUser.balance
+  });
+}
+
+async function handleApiCreateOrder(req, res) {
+  const authUser = await authenticateApiKey(req);
+  if (!authUser) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or missing x-api-key header.' });
+  }
+
+  const { plan_id, quantity = 1 } = req.body || {};
+  const qty = Math.max(1, parseInt(quantity, 10));
+
+  if (!plan_id || isNaN(qty)) {
+    return res.status(400).json({ success: false, error: 'Missing or invalid plan_id / quantity.' });
+  }
+
+  const pool = getPool();
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const [wallets] = await conn.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [authUser.userId]);
+    const balance = Number(wallets[0]?.balance || 0);
+
+    const [plans] = await conn.query('SELECT * FROM plans WHERE id = ? AND is_active = 1', [plan_id]);
+    if (plans.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Plan not found.' });
+    }
+
+    const pl = plans[0];
+    const totalCost = Number((Number(pl.price) * qty).toFixed(2));
+
+    if (balance < totalCost) {
+      await conn.rollback();
+      return res.status(402).json({
+        success: false,
+        error: 'Insufficient balance.',
+        required: totalCost,
+        current_balance: balance
+      });
+    }
+
+    const [invRows] = await conn.query(
+      `SELECT id, content FROM inventory WHERE plan_id = ? AND UPPER(status) = 'AVAILABLE' LIMIT ? FOR UPDATE`,
+      [plan_id, qty]
+    );
+
+    if (invRows.length < qty) {
+      await conn.rollback();
+      return res.status(409).json({
+        success: false,
+        error: 'Insufficient stock.',
+        available: invRows.length
+      });
+    }
+
+    const newBalance = (balance - totalCost).toFixed(2);
+    const deliveredCredentials = invRows.map(i => i.content);
+    const combinedCredentials = deliveredCredentials.join('\n---\n');
+
+    await conn.query('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [totalCost, authUser.userId]);
+
+    const [orderRes] = await conn.query(
+      `INSERT INTO orders (user_id, plan_id, quantity, amount, payment_method, status, delivery_content)
+       VALUES (?, ?, ?, ?, 'API', 'DELIVERED', ?)`,
+      [authUser.userId, plan_id, qty, totalCost, combinedCredentials]
+    );
+    const orderId = orderRes.insertId;
+
+    const itemIds = invRows.map(i => i.id);
+    await conn.query(`UPDATE inventory SET status = 'SOLD', order_id = ? WHERE id IN (?)`, [orderId, itemIds]);
+
+    await conn.query(
+      `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, reference_id, description)
+       VALUES (?, 'PURCHASE', ?, ?, ?, ?)`,
+      [authUser.userId, totalCost, newBalance, `API#${orderId}`, `API: ${qty}x ${pl.name}`]
+    );
+
+    await conn.commit();
+
+    return res.status(200).json({
+      success: true,
+      order_id: orderId,
+      quantity: qty,
+      amount_deducted: totalCost,
+      remaining_balance: Number(newBalance),
+      credentials: deliveredCredentials
+    });
+
+  } catch (err) {
+    await conn.rollback();
+    return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    conn.release();
+  }
+}
+
+// ============================================================================
+// 18. TEXT & PHOTO INPUT HANDLERS (FSM)
 // ============================================================================
 async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   const { state, data } = await getUserState(userId);
@@ -1875,7 +2210,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
 }
 
 // ============================================================================
-// 18. USER PROFILE & MY ORDERS
+// 19. USER PROFILE & MY ORDERS
 // ============================================================================
 async function renderUserProfile(chatId, messageId, user) {
   const db = getPool();
@@ -1991,7 +2326,7 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
 }
 
 // ============================================================================
-// 19. CALLBACK QUERY ROUTER
+// 20. CALLBACK QUERY ROUTER
 // ============================================================================
 async function handleCallbackQuery(callbackQuery) {
   const queryId = callbackQuery.id;
@@ -2534,9 +2869,39 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 // ============================================================================
-// 20. MAIN VERCEL SERVERLESS HANDLER
+// 21. MAIN VERCEL SERVERLESS HANDLER
 // ============================================================================
 export default async function handler(req, res) {
+  const url = (req.url || '').split('?')[0];
+
+  // 1. Serve Swagger UI Documentation
+  if (url === '/docs' || url === '/api/docs') {
+    res.setHeader('Content-Type', 'text/html');
+    return res.status(200).send(renderSwaggerUIDoc());
+  }
+
+  // 2. Serve OpenAPI Specification
+  if (url === '/api/v2/openapi.json') {
+    return res.status(200).json(getOpenApiSpec());
+  }
+
+  // 3. Reseller REST API v2 Routes
+  if (url === '/api/v2/catalog' && req.method === 'GET') {
+    await initDatabase();
+    return await handleApiCatalog(res);
+  }
+
+  if (url === '/api/v2/wallet' && req.method === 'GET') {
+    await initDatabase();
+    return await handleApiWallet(req, res);
+  }
+
+  if (url === '/api/v2/orders' && req.method === 'POST') {
+    await initDatabase();
+    return await handleApiCreateOrder(req, res);
+  }
+
+  // 4. Server Health Check & Status
   if (req.method === 'GET') {
     try {
       await initDatabase();
@@ -2547,7 +2912,8 @@ export default async function handler(req, res) {
       const tgData = await tgRes.json();
 
       return res.status(200).json({
-        status: 'SUCCESS! Bot backend is 100% operational.',
+        status: 'SUCCESS! Bot backend and Reseller API are 100% operational.',
+        docs: `${PRODUCTION_DOMAIN}/docs`,
         database: 'Connected and SSL Verified',
         tables_created: tables.length,
         telegram_bot: tgData.ok ? `@${tgData.result.username} (Connected)` : tgData,
