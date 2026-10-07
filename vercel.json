@@ -1,12 +1,12 @@
 {
-  "version": 2,
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/bot",
-      "dest": "/api/bot.js"
+      "source": "/docs",
+      "destination": "/api/bot?docs=1"
+    },
+    {
+      "source": "/api/v2/:path*",
+      "destination": "/api/bot"
     }
-  ],
-  "env": {
-    "NODE_OPTIONS": "--enable-source-maps"
-  }
+  ]
 }
