@@ -1394,7 +1394,7 @@ async function renderAdminPendingPayments(chatId, messageId, page = 0) {
 }
 
 // ============================================================================
-// USER-FACING RESELLER API KEY GENERATOR (FIXED)
+// 16. USER-FACING RESELLER API KEY GENERATOR
 // ============================================================================
 async function handleGenerateApiKey(chatId, messageId, userId) {
   let conn = null;
@@ -1404,17 +1404,9 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
     const pool = getPool();
     conn = await pool.getConnection();
 
-    // Ensure api_key column exists (safely ignored if already present)
-    try {
-      await conn.query('ALTER TABLE users ADD COLUMN api_key VARCHAR(100) NULL UNIQUE');
-    } catch (e) {
-      // Column already exists
-    }
-
-    // Save key to database
+    // Direct update query (ALTER TABLE removed)
     await conn.query('UPDATE users SET api_key = ? WHERE id = ?', [generatedKey, userId]);
 
-    // Use HTML parse mode to prevent Markdown entity errors with hyphens and dots
     const messageText = 
       `🔑 <b>Your new API Key</b>\n\n` +
       `<code>${generatedKey}</code>\n\n` +
@@ -1434,9 +1426,10 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
 
   } catch (err) {
     console.error('Error generating API key:', err);
+    // Shows the exact error message so you can see what failed
     await sendMessage(
       chatId,
-      '❌ <b>An error occurred while generating your API Key. Please try again later.</b>'
+      `❌ <b>Error:</b> <code>${err.message || 'Unknown database error'}</code>`
     );
   } finally {
     if (conn) {
