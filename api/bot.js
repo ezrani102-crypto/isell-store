@@ -1404,7 +1404,6 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
     const pool = getPool();
     conn = await pool.getConnection();
 
-    // Direct update query (ALTER TABLE removed)
     await conn.query('UPDATE users SET api_key = ? WHERE id = ?', [generatedKey, userId]);
 
     const messageText = 
@@ -1413,8 +1412,7 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
       `⏱️ Limit: 120 requests/min\n\n` +
       `⚠️ Save it now! This key is shown <b>only once</b> and cannot be retrieved again.\n` +
       `Send it in the <code>x-api-key</code> header when calling <code>/api/v2/*</code> endpoints.\n\n` +
-      `🔒 Never share this key with anyone.\n\n` +
-      `📚 <b>Usage guide:</b> see the <a href="https://your-domain.vercel.app/docs">Swagger API Docs</a>.`;
+      `🔒 Never share this key with anyone.`;
 
     const inlineKeyboard = {
       inline_keyboard: [
@@ -1426,7 +1424,6 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
 
   } catch (err) {
     console.error('Error generating API key:', err);
-    // Shows the exact error message so you can see what failed
     await sendMessage(
       chatId,
       `❌ <b>Error:</b> <code>${err.message || 'Unknown database error'}</code>`
@@ -1437,7 +1434,6 @@ async function handleGenerateApiKey(chatId, messageId, userId) {
     }
   }
 }
-
 // ============================================================================
 // 17. TEXT & PHOTO INPUT HANDLERS (FSM)
 // ============================================================================
