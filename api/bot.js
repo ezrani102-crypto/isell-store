@@ -4,6 +4,7 @@
 // ============================================================================
 
 import mysql from 'mysql2/promise';
+import crypto from 'crypto';
 
 // ============================================================================
 // 1. CONFIGURATION & CONSTANTS
@@ -76,6 +77,7 @@ async function initDatabase() {
       username VARCHAR(255) NULL,
       first_name VARCHAR(255) NULL,
       last_name VARCHAR(255) NULL,
+      api_key VARCHAR(100) NULL UNIQUE,
       is_banned TINYINT(1) DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -207,8 +209,13 @@ async function initDatabase() {
     await db.query(q);
   }
 
+  // Ensure column additions exist on pre-existing databases
   try {
     await db.query('ALTER TABLE orders ADD COLUMN quantity INT NOT NULL DEFAULT 1 AFTER plan_id');
+  } catch (e) {}
+
+  try {
+    await db.query('ALTER TABLE users ADD COLUMN api_key VARCHAR(100) NULL UNIQUE AFTER last_name');
   } catch (e) {}
 
   dbInitialized = true;
@@ -363,8 +370,9 @@ function getCustomerMainMenuKeyboard(userId) {
   const buttons = [
     [{ text: '📁 Browse Categories / Store', callback_data: 'store_page:0' }],
     [{ text: '💰 My Wallet', callback_data: 'wallet_main' }, { text: '📦 My Orders', callback_data: 'my_orders:0' }],
-    [{ text: '👤 Profile', callback_data: 'user_profile' }, { text: '🔎 Search', callback_data: 'store_search' }],
-    [{ text: '📞 Support', callback_data: 'store_support' }, { text: 'ℹ️ FAQ & Help', callback_data: 'store_help' }]
+    [{ text: '👤 Profile', callback_data: 'user_profile' }, { text: '🔑 API Key', callback_data: 'user_gen_apikey' }],
+    [{ text: '🔎 Search', callback_data: 'store_search' }, { text: '📞 Support', callback_data: 'store_support' }],
+    [{ text: 'ℹ️ FAQ & Help', callback_data: 'store_help' }]
   ];
   if (Number(userId) === ADMIN_ID) {
     buttons.push([{ text: '⚙️ Admin Panel', callback_data: 'admin_dashboard' }]);
@@ -1286,7 +1294,6 @@ async function renderAdminDashboard(chatId, messageId = null) {
   }
 }
 
-// PENDING DEPOSITS LISTING
 async function renderAdminPendingDeposits(chatId, messageId, page = 0) {
   const db = getPool();
   const PAGE_SIZE = 5;
@@ -1334,7 +1341,6 @@ async function renderAdminPendingDeposits(chatId, messageId, page = 0) {
   await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
 }
 
-// PENDING ORDER PAYMENTS LISTING
 async function renderAdminPendingPayments(chatId, messageId, page = 0) {
   const db = getPool();
   const PAGE_SIZE = 5;
@@ -1388,13 +1394,62 @@ async function renderAdminPendingPayments(chatId, messageId, page = 0) {
 }
 
 // ============================================================================
-// 16. TEXT & PHOTO INPUT HANDLERS (FSM)
+// 16. USER-FACING RESELLER API KEY GENERATOR
+// ============================================================================
+async function handleGenerateApiKey(chatId, messageId, userId) {
+  let conn = null;
+  try {
+    const generatedKey = `apk_${crypto.randomUUID()}`;
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+
+    await conn.query('UPDATE users SET api_key = ? WHERE id = ?', [generatedKey, userId]);
+
+    const messageText = 
+      `🔑 *Your new API Key*\n\n` +
+      `\`${generatedKey}\`\n\n` +
+      `⏱️ Limit: 120 requests/min\n\n` +
+      `⚠️ Save it now! This key is shown *only once* and cannot be retrieved again\\.\n` +
+      `Send it in the \`x-api-key\` header when calling \`/api/v2/*\` endpoints\\.\n\n` +
+      `🔒 Never share this key with anyone\\.\n\n` +
+      `📚 *Usage guide:* see the [Swagger API Docs](https://your-domain.vercel.app/docs)\\.`;
+
+    const inlineKeyboard = {
+      inline_keyboard: [
+        [{ text: '✅ Done', callback_data: 'main_home' }]
+      ]
+    };
+
+    await callTelegram('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: messageText,
+      parse_mode: 'MarkdownV2',
+      disable_web_page_preview: true,
+      reply_markup: inlineKeyboard
+    });
+
+  } catch (err) {
+    console.error('Error generating API key:', err);
+    await sendMessage(
+      chatId,
+      '❌ <b>An error occurred while generating your API Key. Please try again later.</b>'
+    );
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+}
+
+// ============================================================================
+// 17. TEXT & PHOTO INPUT HANDLERS (FSM)
 // ============================================================================
 async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   const { state, data } = await getUserState(userId);
   if (!state) return false;
 
-  // Custom Quantity Input Handler
   if (state === 'CUSTOM_QTY_INPUT') {
     const qty = parseInt(text.trim(), 10);
     const { planId, returnPage } = data;
@@ -1651,7 +1706,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       return true;
     }
 
-    // Edit Product Name
     if (state === 'ADM_EDIT_PROD_NAME') {
       const db = getPool();
       await db.query(`UPDATE products SET name = ? WHERE id = ?`, [text.trim(), data.prodId]);
@@ -1662,7 +1716,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       return true;
     }
 
-    // Add Plan States
     if (state === 'ADM_ADD_PLAN_NAME') {
       await setUserState(userId, 'ADM_ADD_PLAN_DETAILS', { ...data, name: text.trim() });
       await sendMessage(chatId, '📝 <b>Step 2/5:</b> Enter the <b>Plan Details / Features</b> (supports multiline text):');
@@ -1724,7 +1777,6 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
       return true;
     }
 
-    // Edit Plan Price
     if (state === 'ADM_EDIT_PLAN_PRICE') {
       const price = parseFloat(text.replace('$', '').trim());
       if (isNaN(price) || price < 0) {
@@ -1832,7 +1884,7 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
 }
 
 // ============================================================================
-// 17. USER PROFILE & MY ORDERS
+// 18. USER PROFILE & MY ORDERS
 // ============================================================================
 async function renderUserProfile(chatId, messageId, user) {
   const db = getPool();
@@ -1853,6 +1905,7 @@ async function renderUserProfile(chatId, messageId, user) {
   const keyboard = {
     inline_keyboard: [
       [{ text: '💰 Open Wallet', callback_data: 'wallet_main' }, { text: '📦 View Orders', callback_data: 'my_orders:0' }],
+      [{ text: '🔑 API Key', callback_data: 'user_gen_apikey' }],
       [{ text: '🏠 Home', callback_data: 'main_home' }]
     ]
   };
@@ -1947,7 +2000,7 @@ async function renderSingleOrder(chatId, messageId, orderId, userId) {
 }
 
 // ============================================================================
-// 18. CALLBACK QUERY ROUTER
+// 19. CALLBACK QUERY ROUTER
 // ============================================================================
 async function handleCallbackQuery(callbackQuery) {
   const queryId = callbackQuery.id;
@@ -1988,6 +2041,11 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
+  // Reseller API Key Generation Route
+  if (data === 'user_gen_apikey') {
+    return await handleGenerateApiKey(chatId, messageId, userId);
+  }
+
   if (data.startsWith('store_page:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     return await renderStorePage(chatId, messageId, page);
@@ -2007,7 +2065,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await renderPlanDetails(chatId, messageId, planId, returnPage, userId);
   }
 
-  // Quantity selection routes
   if (data.startsWith('qty_select:')) {
     const parts = data.split(':');
     const planId = parseInt(parts[1], 10);
@@ -2167,7 +2224,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin Dashboard & Queues
   if (data === 'admin_dashboard') {
     return await renderAdminDashboard(chatId, messageId);
   }
@@ -2217,7 +2273,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Admin Products List (Paginated)
   if (data.startsWith('admin_products:')) {
     const page = parseInt(data.split(':')[1], 10) || 0;
     const PAGE_SIZE = 8;
@@ -2247,7 +2302,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
   }
 
-  // Admin Single Product Management
   if (data.startsWith('adm_prod_mgt:')) {
     const prodId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -2276,7 +2330,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
   }
 
-  // Edit Product Name
   if (data.startsWith('adm_prod_edit:')) {
     const prodId = parseInt(data.split(':')[1], 10);
     await setUserState(userId, 'ADM_EDIT_PROD_NAME', { prodId });
@@ -2288,7 +2341,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Delete Product
   if (data.startsWith('adm_prod_del:')) {
     const prodId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -2302,7 +2354,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Manage Individual Plan
   if (data.startsWith('adm_plan_mgt:')) {
     const planId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -2338,7 +2389,6 @@ async function handleCallbackQuery(callbackQuery) {
     return await editMessageText(chatId, messageId, text, { inline_keyboard: buttons });
   }
 
-  // Edit Plan Price
   if (data.startsWith('adm_plan_price_edit:')) {
     const planId = parseInt(data.split(':')[1], 10);
     await setUserState(userId, 'ADM_EDIT_PLAN_PRICE', { planId });
@@ -2350,7 +2400,6 @@ async function handleCallbackQuery(callbackQuery) {
     );
   }
 
-  // Delete Plan
   if (data.startsWith('adm_plan_del:')) {
     const planId = parseInt(data.split(':')[1], 10);
     const db = getPool();
@@ -2494,7 +2543,7 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 // ============================================================================
-// 19. MAIN VERCEL SERVERLESS HANDLER
+// 20. MAIN VERCEL SERVERLESS HANDLER
 // ============================================================================
 export default async function handler(req, res) {
   if (req.method === 'GET') {
