@@ -191,6 +191,32 @@ async function initDatabase() {
       action VARCHAR(100) NOT NULL,
       details TEXT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;`,
+
+    // STEP 1: BULK CATALOG & BULK ORDERS TABLES
+    `CREATE TABLE IF NOT EXISTS bulk_catalog (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      product_name VARCHAR(150) NOT NULL,
+      plan_name VARCHAR(150) NOT NULL,
+      base_price_per_item DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      plan_details TEXT NULL,
+      duration VARCHAR(100) NOT NULL DEFAULT '30 Days',
+      warranty VARCHAR(255) NOT NULL DEFAULT '7 Days Replacement',
+      is_active TINYINT(1) DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;`,
+
+    `CREATE TABLE IF NOT EXISTS bulk_orders_pending (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      telegram_id BIGINT NOT NULL,
+      product_id INT NOT NULL,
+      quantity INT NOT NULL,
+      amount_paid DECIMAL(12, 2) NOT NULL,
+      status ENUM('pending', 'delivered') NOT NULL DEFAULT 'pending',
+      delivery_content TEXT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES bulk_catalog(id) ON DELETE CASCADE,
+      INDEX idx_bulk_status (status)
     ) ENGINE=InnoDB;`
   ];
 
@@ -357,6 +383,7 @@ async function clearUserState(userId) {
 function getCustomerMainMenuKeyboard(userId) {
   const buttons = [
     [{ text: '📁 Browse Categories / Store', callback_data: 'store_page:0' }],
+    [{ text: '📦 Bulk Orders (10% OFF)', callback_data: 'user_bulk_catalog' }],
     [{ text: '💰 My Wallet', callback_data: 'wallet_main' }, { text: '📦 My Orders', callback_data: 'my_orders:0' }],
     [{ text: '👤 Profile', callback_data: 'user_profile' }, { text: '🔑 API Key', callback_data: 'user_gen_apikey' }],
     [{ text: '🔎 Search', callback_data: 'store_search' }, { text: '📞 Support', callback_data: 'store_support' }],
@@ -372,7 +399,8 @@ function getAdminPanelKeyboard(pendingOrdersCount = 0, pendingDepositsCount = 0)
   return {
     inline_keyboard: [
       [{ text: '📊 Dashboard Overview', callback_data: 'admin_dashboard' }, { text: '🛍 Products & Plans', callback_data: 'admin_products:0' }],
-      [{ text: '➕ Add Product', callback_data: 'adm_prod_add_start' }, { text: '📦 Stock Warehouse', callback_data: 'admin_stock_list:0' }],
+      [{ text: '➕ Add Product', callback_data: 'adm_prod_add_start' }, { text: '📦 Add Bulk Listing', callback_data: 'adm_bulk_add_start' }],
+      [{ text: '📦 Stock Warehouse', callback_data: 'admin_stock_list:0' }],
       [{ text: `💳 Pending Payments (${pendingOrdersCount})`, callback_data: 'admin_payments:0' }, { text: `💰 Pending Deposits (${pendingDepositsCount})`, callback_data: 'admin_deposits:0' }],
       [{ text: '📢 Send Broadcast', callback_data: 'admin_broadcast_prompt' }, { text: '🗑 Wipe Store Clean', callback_data: 'adm_wipe_confirm' }],
       [{ text: '🛍 Open Customer View', callback_data: 'store_page:0' }],
@@ -1770,12 +1798,432 @@ async function handleApiCreateOrder(req, res) {
 }
 
 // ============================================================================
+// STEP 2: ADMIN BULK LISTING CREATION (FSM)
+// ============================================================================
+async function startAddBulkListing(chatId, messageId, userId) {
+  if (Number(userId) !== ADMIN_ID) return;
+
+  await setUserState(userId, 'ADM_BULK_PROD_NAME', {});
+  await editMessageText(
+    chatId,
+    messageId,
+    `📦 <b>CREATE BULK CATALOG LISTING (Step 1/6)</b>\n\n` +
+    `Please reply with the <b>Product Name</b> (e.g., <code>Kimi AI</code>, <code>Claude Enterprise</code>):`,
+    { inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin_dashboard' }]] }
+  );
+}
+
+async function handleAdminBulkTextInput(chatId, userId, text) {
+  const { state, data } = await getUserState(userId);
+  if (!state || !state.startsWith('ADM_BULK_')) return false;
+
+  if (state === 'ADM_BULK_PROD_NAME') {
+    const prodName = text.trim();
+    if (!prodName) {
+      await sendMessage(chatId, '❌ Product Name cannot be empty. Please enter a valid name:');
+      return true;
+    }
+    await setUserState(userId, 'ADM_BULK_PLAN_NAME', { product_name: prodName });
+    await sendMessage(
+      chatId,
+      `📝 <b>Step 2/6: Plan Name</b>\n\nEnter the plan tier/name (e.g., <code>Ultra</code>, <code>Pro Plus</code>, <code>Team</code>):`
+    );
+    return true;
+  }
+
+  if (state === 'ADM_BULK_PLAN_NAME') {
+    const planName = text.trim();
+    if (!planName) {
+      await sendMessage(chatId, '❌ Plan Name cannot be empty:');
+      return true;
+    }
+    await setUserState(userId, 'ADM_BULK_DETAILS', { ...data, plan_name: planName });
+    await sendMessage(
+      chatId,
+      `📋 <b>Step 3/6: Plan Details / Features</b>\n\nEnter features/description (e.g., <i>10x Agent Credits, 1M token context</i>):`
+    );
+    return true;
+  }
+
+  if (state === 'ADM_BULK_DETAILS') {
+    const details = text.trim();
+    await setUserState(userId, 'ADM_BULK_DURATION', { ...data, plan_details: details });
+    await sendMessage(
+      chatId,
+      `⏱️ <b>Step 4/6: Duration</b>\n\nEnter duration text (e.g., <code>1 Month</code>, <code>1 Year</code>, <code>Lifetime</code>):`
+    );
+    return true;
+  }
+
+  if (state === 'ADM_BULK_DURATION') {
+    const duration = text.trim();
+    await setUserState(userId, 'ADM_BULK_WARRANTY', { ...data, duration });
+    await sendMessage(
+      chatId,
+      `🛡️ <b>Step 5/6: Warranty</b>\n\nEnter warranty text (e.g., <code>7 Days Replacement</code>, <code>30 Days Full Warranty</code>):`
+    );
+    return true;
+  }
+
+  if (state === 'ADM_BULK_WARRANTY') {
+    const warranty = text.trim();
+    await setUserState(userId, 'ADM_BULK_PRICE', { ...data, warranty });
+    await sendMessage(
+      chatId,
+      `💵 <b>Step 6/6: Base Price Per Item (USD)</b>\n\n` +
+      `Enter unit price before the 10% bulk discount applies (e.g., <code>99.00</code>):`
+    );
+    return true;
+  }
+
+  if (state === 'ADM_BULK_PRICE') {
+    const rawPrice = text.replace('$', '').trim();
+    const basePrice = parseFloat(rawPrice);
+
+    if (isNaN(basePrice) || basePrice <= 0) {
+      await sendMessage(chatId, '❌ Please enter a valid numerical price (e.g., 99.00):');
+      return true;
+    }
+
+    let conn = null;
+    try {
+      const pool = getPool();
+      conn = await pool.getConnection();
+
+      const [res] = await conn.query(
+        `INSERT INTO bulk_catalog 
+         (product_name, plan_name, plan_details, duration, warranty, base_price_per_item, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, 1)`,
+        [
+          data.product_name,
+          data.plan_name,
+          data.plan_details,
+          data.duration,
+          data.warranty,
+          basePrice
+        ]
+      );
+
+      await clearUserState(userId);
+      await logAdminAction(ADMIN_ID, 'BULK_PRODUCT_CREATED', `Bulk Listing #${res.insertId} (${data.product_name} - ${data.plan_name})`);
+
+      await sendMessage(
+        chatId,
+        `✅ <b>BULK LISTING CREATED SUCCESSFULLY!</b>\n\n` +
+        `🆔 Listing ID: <code>${res.insertId}</code>\n` +
+        `📦 Product: <b>${data.product_name}</b>\n` +
+        `🏷️ Plan: <b>${data.plan_name}</b>\n` +
+        `💵 Base Price: <b>$${basePrice.toFixed(2)} / unit</b>\n` +
+        `🎉 10+ Discount Price: <b>$${(basePrice * 0.90).toFixed(2)} / unit (-10%)</b>\n` +
+        `⏱️ Duration: <code>${data.duration}</code>\n` +
+        `🛡️ Warranty: <code>${data.warranty}</code>\n` +
+        `📋 Details: <i>${data.plan_details}</i>`,
+        {
+          inline_keyboard: [
+            [{ text: '📦 View Customer Bulk Store', callback_data: 'user_bulk_catalog' }],
+            [{ text: '◀️ Admin Dashboard', callback_data: 'admin_dashboard' }]
+          ]
+        }
+      );
+    } catch (err) {
+      console.error('Error inserting bulk listing:', err);
+      await sendMessage(chatId, `❌ <b>Database Error:</b> <code>${err.message}</code>`);
+    } finally {
+      if (conn) conn.release();
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
+// ============================================================================
+// STEP 3: USER BULK CATALOG & PRE-ORDER CHECKOUT
+// ============================================================================
+async function renderUserBulkCatalog(chatId, messageId = null) {
+  let conn = null;
+  try {
+    const pool = getPool();
+    conn = await pool.getConnection();
+
+    const [items] = await conn.query(
+      `SELECT * FROM bulk_catalog WHERE is_active = 1 ORDER BY id DESC`
+    );
+
+    if (items.length === 0) {
+      const emptyText =
+        `📦 <b>WHOLESALE / BULK PRE-ORDERS</b>\n\n` +
+        `<i>No bulk packages available right now. Please check back shortly!</i>`;
+      const kb = { inline_keyboard: [[{ text: '🏠 Home', callback_data: 'main_home' }]] };
+      return messageId 
+        ? await editMessageText(chatId, messageId, emptyText, kb) 
+        : await sendMessage(chatId, emptyText, kb);
+    }
+
+    const text =
+      `📦 <b>WHOLESALE & BULK PRE-ORDERS</b>\n\n` +
+      `🔥 <b>Special Policy:</b> Minimum purchase of <b>10 accounts</b>.\n` +
+      `⚡ <b>Instant 10% Discount</b> automatically applied to all orders!\n` +
+      `⏳ <i>Pre-orders are generated and verified manually by administration upon receipt.</i>\n\n` +
+      `Select a package below to start:`;
+
+    const inlineKeyboard = [];
+    for (const item of items) {
+      const discPrice = (Number(item.base_price_per_item) * 0.90).toFixed(2);
+      inlineKeyboard.push([{
+        text: `📦 ${item.product_name} - ${item.plan_name} ($${discPrice}/ea)`,
+        callback_data: `bulk_view:${item.id}`
+      }]);
+    }
+
+    inlineKeyboard.push([{ text: '🏠 Home', callback_data: 'main_home' }]);
+
+    const markup = { inline_keyboard: inlineKeyboard };
+    if (messageId) {
+      await editMessageText(chatId, messageId, text, markup);
+    } else {
+      await sendMessage(chatId, text, markup);
+    }
+  } catch (err) {
+    console.error('Error rendering bulk catalog:', err);
+    await sendMessage(chatId, '❌ Error loading bulk catalog.');
+  } finally {
+    if (conn) conn.release();
+  }
+}
+
+async function renderBulkPackageDetail(chatId, messageId, bulkId, userId) {
+  let conn = null;
+  try {
+    const pool = getPool();
+    conn = await pool.getConnection();
+
+    const [rows] = await conn.query('SELECT * FROM bulk_catalog WHERE id = ? AND is_active = 1', [bulkId]);
+    if (rows.length === 0) {
+      return await editMessageText(chatId, messageId, '❌ Package not found.', {
+        inline_keyboard: [[{ text: '👈 Back', callback_data: 'user_bulk_catalog' }]]
+      });
+    }
+
+    const item = rows[0];
+    const basePrice = Number(item.base_price_per_item);
+    const discountedUnitPrice = basePrice * 0.90;
+
+    await setUserState(userId, 'USER_WAITING_BULK_QTY', { bulk_id: item.id });
+
+    const text =
+      `📦 <b>${item.product_name} — ${item.plan_name} (BULK TIER)</b>\n\n` +
+      `📋 <b>Plan Details:</b>\n${item.plan_details || 'Wholesale delivery accounts.'}\n\n` +
+      `⏱️ <b>Duration:</b> ${item.duration}\n` +
+      `🛡️ <b>Warranty:</b> ${item.warranty}\n\n` +
+      `💵 <b>Standard Unit Price:</b> <s>$${basePrice.toFixed(2)}</s>\n` +
+      `🏷️ <b>Discounted Unit Price:</b> <b>$${discountedUnitPrice.toFixed(2)} USD (-10%)</b>\n` +
+      `⚠️ <b>Minimum Order:</b> <code>10 accounts</code>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `👉 <b>Reply below with the quantity you want to purchase (10 or more):</b>`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '👈 Back to Bulk Catalog', callback_data: 'user_bulk_catalog' }]
+      ]
+    };
+
+    await editMessageText(chatId, messageId, text, keyboard);
+  } catch (err) {
+    console.error('Error fetching bulk details:', err);
+    await sendMessage(chatId, '❌ Error loading package details.');
+  } finally {
+    if (conn) conn.release();
+  }
+}
+
+async function processUserBulkQuantityInput(chatId, userId, text) {
+  const { state, data } = await getUserState(userId);
+  if (state !== 'USER_WAITING_BULK_QTY') return false;
+
+  const rawQty = parseInt(text.trim(), 10);
+
+  // Validation: Must be an integer >= 10
+  if (isNaN(rawQty) || rawQty < 10) {
+    await sendMessage(
+      chatId,
+      `❌ <b>Minimum Order Not Met!</b>\n\n` +
+      `Bulk orders require a minimum of <b>10 accounts</b> to qualify for the 10% wholesale discount.\n\n` +
+      `Please reply with a quantity of <b>10 or higher</b>:`
+    );
+    return true;
+  }
+
+  const bulkId = data.bulk_id;
+  const pool = getPool();
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    // 1. Lock Bulk Item
+    const [bulkRows] = await conn.query(
+      'SELECT * FROM bulk_catalog WHERE id = ? AND is_active = 1 FOR UPDATE',
+      [bulkId]
+    );
+    if (bulkRows.length === 0) {
+      await conn.rollback();
+      await sendMessage(chatId, '❌ This bulk listing is no longer available.');
+      await clearUserState(userId);
+      return true;
+    }
+    const item = bulkRows[0];
+
+    // 2. Compute 10% Discounted Pricing Mathematically
+    const basePrice = Number(item.base_price_per_item);
+    const standardTotal = basePrice * rawQty;
+    const discountedTotal = Number((standardTotal * 0.90).toFixed(2));
+    const totalSavings = Number((standardTotal - discountedTotal).toFixed(2));
+
+    // 3. Lock & Verify User Wallet Balance
+    const [wallets] = await conn.query(
+      'SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE',
+      [userId]
+    );
+    if (wallets.length === 0) {
+      await conn.rollback();
+      await sendMessage(chatId, '❌ Wallet record not found. Please type /start.');
+      return true;
+    }
+
+    const currentBalance = Number(wallets[0].balance);
+    if (currentBalance < discountedTotal) {
+      await conn.rollback();
+      const needed = (discountedTotal - currentBalance).toFixed(2);
+      await sendMessage(
+        chatId,
+        `❌ <b>INSUFFICIENT BALANCE FOR BULK ORDER</b>\n\n` +
+        `📦 <b>Order:</b> ${rawQty}x ${item.product_name} (${item.plan_name})\n` +
+        `💰 <b>Discounted Total:</b> $${discountedTotal.toFixed(2)} USD\n` +
+        `💳 <b>Your Wallet Balance:</b> $${currentBalance.toFixed(2)} USD\n` +
+        `⚠️ <b>Short by:</b> <b>$${needed} USD</b>\n\n` +
+        `Please top up your wallet balance before completing this bulk pre-order.`,
+        {
+          inline_keyboard: [
+            [{ text: '💳 Top Up Wallet', callback_data: 'wallet_deposit' }],
+            [{ text: '📦 Return to Bulk Store', callback_data: 'user_bulk_catalog' }]
+          ]
+        }
+      );
+      return true;
+    }
+
+    // 4. Atomic Balance Deduction
+    const newBalance = Number((currentBalance - discountedTotal).toFixed(2));
+    await conn.query('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [discountedTotal, userId]);
+
+    // 5. Insert Record into bulk_orders_pending
+    const [orderRes] = await conn.query(
+      `INSERT INTO bulk_orders_pending 
+       (telegram_id, product_id, quantity, amount_paid, status)
+       VALUES (?, ?, ?, ?, 'pending')`,
+      [userId, bulkId, rawQty, discountedTotal]
+    );
+    const bulkOrderId = orderRes.insertId;
+
+    // 6. Record Wallet Ledger Transaction
+    await conn.query(
+      `INSERT INTO wallet_transactions (user_id, type, amount, balance_after, reference_id, description)
+       VALUES (?, 'PURCHASE', ?, ?, ?, ?)`,
+      [
+        userId,
+        discountedTotal,
+        newBalance.toFixed(2),
+        `BULK#${bulkOrderId}`,
+        `Bulk Pre-order: ${rawQty}x ${item.product_name} (${item.plan_name})`
+      ]
+    );
+
+    await conn.commit();
+    await clearUserState(userId);
+
+    // 7. Customer Confirmation Receipt
+    await sendMessage(
+      chatId,
+      `🎉 <b>BULK PRE-ORDER RECEIVED & CONFIRMED!</b>\n\n` +
+      `🆔 <b>Bulk Order ID:</b> <code>#BULK${bulkOrderId}</code>\n` +
+      `📦 <b>Product:</b> <b>${item.product_name} (${item.plan_name})</b>\n` +
+      `🔢 <b>Quantity:</b> <code>${rawQty} accounts</code>\n` +
+      `💵 <b>Standard Total:</b> <s>$${standardTotal.toFixed(2)}</s>\n` +
+      `🔥 <b>Bulk Total Paid:</b> <b>$${discountedTotal.toFixed(2)} USD</b>\n` +
+      `💸 <b>You Saved:</b> <code>$${totalSavings.toFixed(2)} (10% OFF)</code>\n` +
+      `💰 <b>Remaining Wallet:</b> $${newBalance.toFixed(2)} USD\n\n` +
+      `⏳ <b>Fulfillment Status:</b> <code>PENDING ADMIN MANUAL DELIVERY</code>\n` +
+      `<i>Our admin team has received your order and is generating your accounts. They will be delivered directly to your Telegram chat shortly!</i>`,
+      {
+        inline_keyboard: [
+          [{ text: '🛍 Continue Shopping', callback_data: 'store_page:0' }],
+          [{ text: '🏠 Home', callback_data: 'main_home' }]
+        ]
+      }
+    );
+
+    // 8. STEP 4: Fire Immediate Admin Alert
+    await sendAdminBulkOrderNotification({
+      orderId: bulkOrderId,
+      telegramId: userId,
+      productName: item.product_name,
+      planName: item.plan_name,
+      quantity: rawQty,
+      amountPaid: discountedTotal.toFixed(2)
+    });
+
+  } catch (err) {
+    await conn.rollback();
+    console.error('Bulk order transaction failure:', err);
+    await sendMessage(chatId, `❌ Transaction failed. Your balance was not charged.`);
+  } finally {
+    conn.release();
+  }
+
+  return true;
+}
+
+// ============================================================================
+// STEP 4: IMMEDIATE ADMIN NOTIFICATION HANDLER
+// ============================================================================
+async function sendAdminBulkOrderNotification({ orderId, telegramId, productName, planName, quantity, amountPaid }) {
+  const alertText =
+    `🚨 <b>NEW BULK PRE-ORDER RECEIVED!</b>\n\n` +
+    `🆔 <b>Order ID:</b> <code>#BULK${orderId}</code>\n` +
+    `👤 <b>Buyer ChatID:</b> <code>${telegramId}</code> (<a href="tg://user?id=${telegramId}">Open Profile</a>)\n` +
+    `📦 <b>Product:</b> <b>${productName}</b> (<b>${planName}</b>)\n` +
+    `🔢 <b>Quantity:</b> <code>${quantity}</code>\n` +
+    `💰 <b>Total Paid:</b> <b>$${amountPaid} USD</b>\n\n` +
+    `⚠️ <b>Action Required:</b> Generate these accounts and deliver them using your admin console.`;
+
+  const adminKeyboard = {
+    inline_keyboard: [
+      [{ text: `📦 Fulfill Order #BULK${orderId}`, callback_data: `adm_bulk_fulfill_prompt:${orderId}` }],
+      [{ text: `💬 Message Buyer (${telegramId})`, url: `tg://user?id=${telegramId}` }]
+    ]
+  };
+
+  try {
+    await sendMessage(ADMIN_ID, alertText, adminKeyboard);
+  } catch (err) {
+    console.error('Failed to dispatch bulk pre-order alert to admin:', err);
+  }
+}
+
+// ============================================================================
 // 18. TEXT & PHOTO INPUT HANDLERS (FSM)
 // ============================================================================
 async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
   const { state, data } = await getUserState(userId);
   if (!state) return false;
 
+  // Bulk Orders User Input Handling
+  const handledUserBulk = await processUserBulkQuantityInput(chatId, userId, text);
+  if (handledUserBulk) return true;
+
+  // Custom Quantity Input Handler
   if (state === 'CUSTOM_QTY_INPUT') {
     const qty = parseInt(text.trim(), 10);
     const { planId, returnPage } = data;
@@ -2004,6 +2452,54 @@ async function handleUserTextInput(chatId, userId, text, photoFileId = null) {
 
   // Admin Workflows
   if (Number(userId) === ADMIN_ID) {
+    // Admin Bulk Creation Input Handling
+    const handledAdminBulk = await handleAdminBulkTextInput(chatId, userId, text);
+    if (handledAdminBulk) return true;
+
+    // Admin Fulfill Bulk Order
+    if (state === 'ADM_FULFILL_BULK_INPUT') {
+      const bulkOrderId = data.bulkOrderId;
+      const db = getPool();
+
+      await db.query(
+        `UPDATE bulk_orders_pending SET status = 'delivered', delivery_content = ? WHERE id = ?`,
+        [text.trim(), bulkOrderId]
+      );
+
+      const [ordRows] = await db.query(
+        `SELECT b.*, c.product_name, c.plan_name 
+         FROM bulk_orders_pending b 
+         JOIN bulk_catalog c ON b.product_id = c.id 
+         WHERE b.id = ?`,
+        [bulkOrderId]
+      );
+      await clearUserState(userId);
+
+      if (ordRows.length > 0) {
+        const o = ordRows[0];
+        await sendMessage(
+          o.telegram_id,
+          `📦 <b>BULK PRE-ORDER #BULK${bulkOrderId} FULFILLED!</b>\n\n` +
+          `Item: <b>${o.product_name} (${o.plan_name})</b>\n` +
+          `Quantity: <code>${o.quantity} accounts</code>\n\n` +
+          `<b>ACCESS CREDENTIALS (TEXT FORM):</b>\n` +
+          `<code>${text.trim()}</code>\n\n` +
+          `<i>A backup .txt file with these credentials has also been attached below!</i>`
+        );
+
+        await sendCredentialsFile(
+          o.telegram_id,
+          `bulk_order_BULK${bulkOrderId}_credentials.txt`,
+          `ISell Store - Bulk Order #BULK${bulkOrderId}\nProduct: ${o.product_name} (${o.plan_name})\nQuantity: ${o.quantity}\nCredentials:\n${text.trim()}\n\nSupport: @${SUPPORT_USERNAME}`,
+          `📁 <b>Bulk Order #BULK${bulkOrderId} Credentials Attached.</b>`
+        );
+      }
+
+      await logAdminAction(ADMIN_ID, 'BULK_ORDER_FULFILLED', `Bulk Order #${bulkOrderId} fulfilled manually.`);
+      await sendMessage(chatId, `✅ Bulk Order #BULK${bulkOrderId} fulfilled and sent to customer.`);
+      return true;
+    }
+
     if (state === 'ADM_ADD_PROD_NAME') {
       await setUserState(userId, 'ADM_ADD_PROD_EMOJI', { name: text.trim() });
       await sendMessage(chatId, `Enter an emoji for <b>${text.trim()}</b> (e.g. 🤖, 🎨, 🎵, 🎬, 🔥):`);
@@ -2364,6 +2860,30 @@ async function handleCallbackQuery(callbackQuery) {
       messageId,
       `🛍 <b>Welcome to ${STORE_NAME}</b>\n\nPremium digital tools, subscriptions, and accounts with instant delivery and guaranteed warranty.`,
       getCustomerMainMenuKeyboard(userId)
+    );
+  }
+
+  // BULK PRE-ORDER ROUTES
+  if (data === 'user_bulk_catalog') {
+    return await renderUserBulkCatalog(chatId, messageId);
+  }
+
+  if (data.startsWith('bulk_view:')) {
+    const bulkId = parseInt(data.split(':')[1], 10);
+    return await renderBulkPackageDetail(chatId, messageId, bulkId, userId);
+  }
+
+  if (data === 'adm_bulk_add_start') {
+    return await startAddBulkListing(chatId, messageId, userId);
+  }
+
+  if (data.startsWith('adm_bulk_fulfill_prompt:')) {
+    const bulkOrderId = parseInt(data.split(':')[1], 10);
+    await setUserState(userId, 'ADM_FULFILL_BULK_INPUT', { bulkOrderId });
+    return await sendMessage(
+      chatId,
+      `📦 <b>ENTER CREDENTIALS FOR BULK ORDER #BULK${bulkOrderId}</b>\n\n` +
+      `Paste the generated accounts/keys below to deliver to the customer:`
     );
   }
 
@@ -2981,7 +3501,8 @@ export default async function handler(req, res) {
             {
               inline_keyboard: [
                 [{ text: '⚙️ Admin Panel', callback_data: 'admin_dashboard' }],
-                [{ text: '📁 Browse Store', callback_data: 'store_page:0' }]
+                [{ text: '📁 Browse Store', callback_data: 'store_page:0' }],
+                [{ text: '📦 Bulk Orders (Wholesale)', callback_data: 'user_bulk_catalog' }]
               ]
             }
           );
@@ -3011,6 +3532,11 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true });
       }
 
+      if (text === '/bulk') {
+        await renderUserBulkCatalog(chatId);
+        return res.status(200).json({ ok: true });
+      }
+
       if (text === '/wallet') {
         await renderWalletMenu(chatId, null, userId);
         return res.status(200).json({ ok: true });
@@ -3031,6 +3557,7 @@ export default async function handler(req, res) {
           chatId,
           `ℹ️ <b>ISell Store Help</b>\n\n` +
           `• Use /store to explore our software catalog.\n` +
+          `• Use /bulk to buy packages of 10+ accounts at 10% OFF.\n` +
           `• Use /wallet to deposit and check your balance.\n` +
           `• Use /orders to view your past purchases.\n` +
           `• Contact @${SUPPORT_USERNAME} for support.`,
